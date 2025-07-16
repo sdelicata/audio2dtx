@@ -8,8 +8,4 @@ matplotlib==3.6.3
 pandas==1.5.3
 spleeter==2.4.2
 pathlib2==2.3.7
-magenta==2.1.4
-tensorflow-probability==0.19.0
-pretty_midi==0.2.10
 scikit-learn==1.2.2
-mir-eval==0.7
