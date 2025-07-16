@@ -202,11 +202,343 @@ class AudioToChart:
         self.model = tf.keras.models.load_model("/app/PredictOnset.h5", compile=False)
         print("Model loaded successfully")
         
+    def detect_onsets_librosa(self):
+        """Enhanced librosa onset detection with optimized parameters"""
+        print("Detecting onsets with enhanced librosa methods...")
+        
+        # Convert drum audio to mono for analysis
+        drum_mono = librosa.to_mono(np.transpose(self.drum_audio))
+        
+        # Different onset detection methods using onset_strength
+        onset_methods = [
+            {'method': 'energy', 'threshold': 0.05, 'pre_max': 8, 'post_max': 8, 'pre_avg': 8, 'post_avg': 8, 'wait': 4},
+            {'method': 'hfc', 'threshold': 0.03, 'pre_max': 12, 'post_max': 12, 'pre_avg': 12, 'post_avg': 12, 'wait': 6},
+            {'method': 'complex', 'threshold': 0.02, 'pre_max': 10, 'post_max': 10, 'pre_avg': 10, 'post_avg': 10, 'wait': 5},
+            {'method': 'phase', 'threshold': 0.08, 'pre_max': 6, 'post_max': 6, 'pre_avg': 6, 'post_avg': 6, 'wait': 3},
+            {'method': 'specdiff', 'threshold': 0.04, 'pre_max': 10, 'post_max': 10, 'pre_avg': 10, 'post_avg': 10, 'wait': 5},
+        ]
+        
+        all_onsets = []
+        hop_length = int(0.01 * self.sample_rate)  # 10ms hop
+        
+        for method_config in onset_methods:
+            try:
+                method_name = method_config['method']
+                # Create onset strength function for this method
+                onset_strength = librosa.onset.onset_strength(
+                    y=drum_mono, 
+                    sr=self.sample_rate,
+                    hop_length=hop_length,
+                    feature=method_name,
+                    aggregate=np.median
+                )
+                
+                # Detect onsets from strength function
+                onsets = librosa.onset.onset_detect(
+                    onset_envelope=onset_strength,
+                    sr=self.sample_rate,
+                    hop_length=hop_length,
+                    threshold=method_config['threshold'],
+                    pre_max=method_config['pre_max'],
+                    post_max=method_config['post_max'],
+                    pre_avg=method_config['pre_avg'],
+                    post_avg=method_config['post_avg'],
+                    wait=method_config['wait']
+                )
+                
+                onset_times = librosa.frames_to_time(onsets, sr=self.sample_rate, hop_length=hop_length)
+                all_onsets.extend(onset_times)
+                print(f"  {method_name}: {len(onset_times)} onsets")
+            except Exception as e:
+                print(f"  {method_name}: failed ({str(e)})")
+                continue
+        
+        # Remove duplicates with small tolerance and sort
+        unique_onsets = []
+        tolerance = 0.01  # 10ms tolerance
+        
+        for onset in sorted(all_onsets):
+            is_duplicate = False
+            for existing_onset in unique_onsets:
+                if abs(onset - existing_onset) < tolerance:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_onsets.append(onset)
+        
+        print(f"Enhanced librosa detected {len(unique_onsets)} unique onsets")
+        return np.array(unique_onsets)
+    
+    def detect_onsets_energy(self):
+        """Enhanced energy-based onset detection with multiple energy features"""
+        print("Detecting onsets with enhanced energy analysis...")
+        
+        drum_mono = librosa.to_mono(np.transpose(self.drum_audio))
+        hop_length = int(0.005 * self.sample_rate)  # 5ms hop for higher resolution
+        
+        # Multiple energy features
+        # 1. RMS energy
+        rms = librosa.feature.rms(y=drum_mono, hop_length=hop_length, frame_length=hop_length*4)[0]
+        
+        # 2. Spectral flux
+        stft = librosa.stft(drum_mono, hop_length=hop_length, n_fft=1024)
+        spectral_flux = np.diff(np.abs(stft), axis=1)
+        spectral_flux = np.sum(np.maximum(0, spectral_flux), axis=0)  # Only positive flux
+        
+        # 3. High-frequency energy (for detecting cymbals/hi-hats)
+        high_freq_energy = np.sum(np.abs(stft[512:]), axis=0)  # Upper half of spectrum
+        
+        # 4. Low-frequency energy (for detecting kicks/toms)
+        low_freq_energy = np.sum(np.abs(stft[:256]), axis=0)  # Lower quarter of spectrum
+        
+        # 5. Mid-frequency energy (for detecting snares)
+        mid_freq_energy = np.sum(np.abs(stft[128:512]), axis=0)  # Mid range
+        
+        # Align all features to the same length
+        min_len = min(len(rms), len(spectral_flux), len(high_freq_energy), len(low_freq_energy), len(mid_freq_energy))
+        rms = rms[:min_len]
+        spectral_flux = spectral_flux[:min_len]
+        high_freq_energy = high_freq_energy[:min_len]
+        low_freq_energy = low_freq_energy[:min_len]
+        mid_freq_energy = mid_freq_energy[:min_len]
+        
+        # Normalize all features
+        rms_norm = rms / (np.max(rms) + 1e-10)
+        flux_norm = spectral_flux / (np.max(spectral_flux) + 1e-10)
+        high_norm = high_freq_energy / (np.max(high_freq_energy) + 1e-10)
+        low_norm = low_freq_energy / (np.max(low_freq_energy) + 1e-10)
+        mid_norm = mid_freq_energy / (np.max(mid_freq_energy) + 1e-10)
+        
+        # Combine features with weights
+        combined_energy = (0.3 * rms_norm + 0.4 * flux_norm + 0.1 * high_norm + 
+                          0.1 * low_norm + 0.1 * mid_norm)
+        
+        # Apply smoothing to reduce noise
+        from scipy.signal import savgol_filter
+        if len(combined_energy) > 21:
+            combined_energy = savgol_filter(combined_energy, 21, 3)
+        
+        # Adaptive thresholding with percentile-based approach
+        threshold_percentile = 85  # Use 85th percentile as threshold
+        threshold = np.percentile(combined_energy, threshold_percentile)
+        
+        # Additional dynamic threshold adjustment based on local statistics
+        window_size = int(0.5 * self.sample_rate / hop_length)  # 0.5 second window
+        dynamic_threshold = np.zeros_like(combined_energy)
+        
+        for i in range(len(combined_energy)):
+            start_idx = max(0, i - window_size // 2)
+            end_idx = min(len(combined_energy), i + window_size // 2)
+            local_window = combined_energy[start_idx:end_idx]
+            dynamic_threshold[i] = np.mean(local_window) + 1.5 * np.std(local_window)
+        
+        # Use the higher of global and dynamic thresholds
+        final_threshold = np.maximum(threshold, dynamic_threshold)
+        
+        # Peak picking with adaptive parameters
+        peaks = []
+        for i in range(5, len(combined_energy) - 5):
+            if combined_energy[i] > final_threshold[i]:
+                # Check if it's a local maximum
+                if (combined_energy[i] > combined_energy[i-1] and 
+                    combined_energy[i] > combined_energy[i+1] and
+                    combined_energy[i] >= np.max(combined_energy[i-5:i+6])):
+                    peaks.append(i)
+        
+        # Remove peaks that are too close together
+        filtered_peaks = []
+        min_distance = int(0.02 * self.sample_rate / hop_length)  # 20ms minimum distance
+        
+        for peak in peaks:
+            if not filtered_peaks or peak - filtered_peaks[-1] >= min_distance:
+                filtered_peaks.append(peak)
+        
+        onset_times = librosa.frames_to_time(filtered_peaks, sr=self.sample_rate, hop_length=hop_length)
+        
+        print(f"Enhanced energy method detected {len(onset_times)} onsets")
+        return onset_times
+    
     def predict_onsets(self, model_input):
         """Use ML model to predict drum onsets"""
-        print("Predicting onsets...")
+        print("Predicting onsets with ML model...")
         self.onset_predictions = self.model.predict(model_input)
-        print("Onset prediction completed")
+        print("ML onset prediction completed")
+        
+    def classify_instrument_by_frequency(self, onset_time, window_size=0.05):
+        """Enhanced instrument classification based on spectral analysis"""
+        drum_mono = librosa.to_mono(np.transpose(self.drum_audio))
+        
+        # Extract window around onset with adaptive size
+        start_sample = int((onset_time - window_size/2) * self.sample_rate)
+        end_sample = int((onset_time + window_size/2) * self.sample_rate)
+        
+        if start_sample < 0:
+            start_sample = 0
+        if end_sample >= len(drum_mono):
+            end_sample = len(drum_mono) - 1
+            
+        window = drum_mono[start_sample:end_sample]
+        
+        if len(window) < 512:
+            return 2  # Default to kick
+        
+        # Apply windowing for better frequency resolution
+        windowed = window * np.hanning(len(window))
+        
+        # Compute FFT with zero-padding for better frequency resolution
+        fft_size = max(2048, len(windowed))
+        fft = np.fft.fft(windowed, fft_size)
+        freqs = np.fft.fftfreq(fft_size, 1/self.sample_rate)
+        magnitude = np.abs(fft[:fft_size//2])
+        freqs = freqs[:fft_size//2]
+        
+        # Enhanced frequency band analysis
+        sub_bass = np.sum(magnitude[(freqs >= 20) & (freqs <= 60)])         # Sub-bass
+        bass = np.sum(magnitude[(freqs >= 60) & (freqs <= 120)])            # Bass
+        low_mid = np.sum(magnitude[(freqs >= 120) & (freqs <= 400)])        # Low-mid
+        mid = np.sum(magnitude[(freqs >= 400) & (freqs <= 1600)])           # Mid
+        high_mid = np.sum(magnitude[(freqs >= 1600) & (freqs <= 6400)])     # High-mid
+        high = np.sum(magnitude[(freqs >= 6400) & (freqs <= 12800)])        # High
+        ultra_high = np.sum(magnitude[(freqs >= 12800) & (freqs <= 20000)]) # Ultra-high
+        
+        total_energy = sub_bass + bass + low_mid + mid + high_mid + high + ultra_high
+        
+        if total_energy == 0:
+            return 2  # Default to kick
+        
+        # Calculate energy ratios
+        sub_bass_ratio = sub_bass / total_energy
+        bass_ratio = bass / total_energy
+        low_mid_ratio = low_mid / total_energy
+        mid_ratio = mid / total_energy
+        high_mid_ratio = high_mid / total_energy
+        high_ratio = high / total_energy
+        ultra_high_ratio = ultra_high / total_energy
+        
+        # Calculate advanced spectral features
+        spectral_centroid = np.sum(freqs * magnitude) / np.sum(magnitude)
+        spectral_spread = np.sqrt(np.sum(((freqs - spectral_centroid) ** 2) * magnitude) / np.sum(magnitude))
+        
+        # Calculate spectral rolloff points
+        cumsum = np.cumsum(magnitude)
+        rolloff_85 = freqs[np.where(cumsum >= 0.85 * cumsum[-1])[0][0]]
+        rolloff_95 = freqs[np.where(cumsum >= 0.95 * cumsum[-1])[0][0]]
+        
+        # Calculate spectral flux (change in magnitude)
+        if hasattr(self, '_prev_magnitude'):
+            spectral_flux = np.sum(np.maximum(0, magnitude - self._prev_magnitude))
+        else:
+            spectral_flux = np.sum(magnitude)
+        self._prev_magnitude = magnitude
+        
+        # Calculate zero crossing rate for the time domain signal
+        zero_crossings = np.sum(np.diff(np.signbit(window)))
+        zcr = zero_crossings / len(window)
+        
+        # Enhanced classification with multiple features
+        
+        # Kick (Bass Drum): Strong sub-bass and bass, low centroid
+        if (sub_bass_ratio > 0.3 or bass_ratio > 0.4) and spectral_centroid < 150:
+            return 2  # Bass Drum
+        
+        # Snare: Mid-frequency dominant with high harmonics, high spectral flux
+        elif (mid_ratio > 0.25 and high_mid_ratio > 0.2) and spectral_centroid > 500 and spectral_centroid < 4000:
+            return 1  # Snare
+        
+        # Hi-hat Close: High frequency, low spread, high ZCR
+        elif high_ratio > 0.25 and spectral_centroid > 6000 and spectral_spread < 3000 and zcr > 0.1:
+            return 0  # Hi-hat Close
+            
+        # Hi-hat Open: High frequency, higher spread, very high ZCR
+        elif (high_ratio > 0.2 or ultra_high_ratio > 0.15) and spectral_centroid > 8000 and spectral_spread > 3000 and zcr > 0.15:
+            return 7  # Hi-hat Open
+        
+        # Crash Cymbal: Very high frequency, very high spread, extremely high ZCR
+        elif ultra_high_ratio > 0.1 and spectral_centroid > 10000 and spectral_spread > 4000 and zcr > 0.2:
+            return 9  # Crash Cymbal
+            
+        # Ride Cymbal: High-mid to high frequency, moderate spread
+        elif high_mid_ratio > 0.2 and spectral_centroid > 3000 and spectral_centroid < 8000:
+            if rolloff_95 > 12000:
+                return 5  # Ride Cymbal
+            else:
+                return 8  # Ride Bell
+        
+        # Toms: Low-mid frequency dominant, moderate centroid
+        elif low_mid_ratio > 0.3 and spectral_centroid > 200 and spectral_centroid < 1000:
+            if spectral_centroid < 400:
+                return 6  # Floor Tom
+            elif spectral_centroid < 600:
+                return 4  # Low Tom
+            else:
+                return 3  # High Tom
+        
+        # Fallback classification based on spectral centroid
+        elif spectral_centroid < 200:
+            return 2  # Bass Drum
+        elif spectral_centroid < 1000:
+            return 4  # Low Tom (default tom)
+        elif spectral_centroid < 4000:
+            return 1  # Snare
+        elif spectral_centroid < 8000:
+            return 5  # Ride Cymbal
+        else:
+            return 0  # Hi-hat Close
+        
+        # Final fallback
+        return 2  # Bass Drum
+        
+    def fuse_onset_detections(self):
+        """Fuse all onset detection methods"""
+        print("Fusing onset detection results...")
+        
+        # Get detections from all methods
+        librosa_onsets = self.detect_onsets_librosa()
+        energy_onsets = self.detect_onsets_energy()
+        
+        # Convert ML predictions to onset times
+        ml_onsets = []
+        time_per_hop = 0.01
+        for class_idx in range(self.num_class):
+            for time_idx, has_onset in enumerate(self.onset_results[class_idx]):
+                if has_onset == 1:
+                    onset_time = time_idx * time_per_hop
+                    ml_onsets.append(onset_time)
+        
+        # Combine all onsets
+        all_onsets = list(librosa_onsets) + list(energy_onsets) + ml_onsets
+        
+        # Remove duplicates with tolerance
+        tolerance = 0.02  # 20ms tolerance
+        fused_onsets = []
+        
+        for onset in sorted(all_onsets):
+            # Check if this onset is close to any existing onset
+            is_duplicate = False
+            for existing_onset in fused_onsets:
+                if abs(onset - existing_onset) < tolerance:
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                fused_onsets.append(onset)
+        
+        print(f"Fused {len(all_onsets)} onsets into {len(fused_onsets)} unique onsets")
+        return fused_onsets
+        
+    def improve_onset_classification(self, fused_onsets):
+        """Classify each onset into instrument categories"""
+        print("Classifying instruments for each onset...")
+        
+        classified_onsets = [[] for _ in range(self.num_class)]
+        
+        for onset_time in fused_onsets:
+            instrument_class = self.classify_instrument_by_frequency(onset_time)
+            if 0 <= instrument_class < self.num_class:
+                classified_onsets[instrument_class].append(onset_time)
+        
+        print(f"Classified onsets: {[len(class_onsets) for class_onsets in classified_onsets]}")
+        return classified_onsets
         
     def peak_picking(self):
         """Apply peak picking algorithm to onset predictions"""
@@ -266,15 +598,94 @@ class AudioToChart:
         
         print("Beat-based timing applied")
         
+    def apply_improved_timing(self, classified_onsets):
+        """Apply improved beat-based timing to classified onsets"""
+        print("Applying improved timing to classified onsets...")
+        
+        # Initialize beat-aligned onsets for each instrument class
+        self.beat_aligned_onsets = [[] for _ in range(self.num_class)]
+        
+        for instrument_class, onset_times in enumerate(classified_onsets):
+            if len(onset_times) > 0:
+                # Apply quantization to beat positions
+                quantized_times = self.quantize_onsets_to_beats(onset_times, self.beat_times)
+                
+                # Apply additional filtering based on instrument characteristics
+                filtered_times = self.filter_onsets_by_instrument(quantized_times, instrument_class)
+                
+                self.beat_aligned_onsets[instrument_class] = filtered_times
+            else:
+                self.beat_aligned_onsets[instrument_class] = []
+        
+        # Print statistics
+        total_onsets = sum(len(onsets) for onsets in self.beat_aligned_onsets)
+        print(f"Applied improved timing to {total_onsets} onsets across {self.num_class} instruments")
+        for i, onsets in enumerate(self.beat_aligned_onsets):
+            if len(onsets) > 0:
+                print(f"  {self.CHANNEL_NAMES[self.INT_TO_CHANNEL[i]]}: {len(onsets)} onsets")
+        
+        print("Improved timing applied")
+        
+    def filter_onsets_by_instrument(self, onset_times, instrument_class):
+        """Filter onsets based on instrument-specific characteristics"""
+        if len(onset_times) == 0:
+            return onset_times
+            
+        filtered_onsets = []
+        min_interval = self.get_min_interval_for_instrument(instrument_class)
+        
+        # Remove onsets that are too close together for this instrument
+        for i, onset_time in enumerate(onset_times):
+            if i == 0:
+                filtered_onsets.append(onset_time)
+            else:
+                time_diff = onset_time - filtered_onsets[-1]
+                if time_diff >= min_interval:
+                    filtered_onsets.append(onset_time)
+        
+        return filtered_onsets
+        
+    def get_min_interval_for_instrument(self, instrument_class):
+        """Get minimum interval between onsets for specific instrument"""
+        # Define minimum intervals based on instrument characteristics
+        # Values in seconds
+        instrument_intervals = {
+            0: 0.05,  # Hi-hat Close - can be played very fast
+            1: 0.1,   # Snare - moderate speed
+            2: 0.08,  # Bass Drum - can be played quite fast
+            3: 0.12,  # High Tom - moderate speed
+            4: 0.12,  # Low Tom - moderate speed
+            5: 0.15,  # Ride Cymbal - slower decay
+            6: 0.15,  # Floor Tom - slower decay
+            7: 0.08,  # Hi-hat Open - can be played fast
+            8: 0.2,   # Ride Bell - longer decay
+            9: 0.3,   # Crash Cymbal - very long decay
+        }
+        
+        return instrument_intervals.get(instrument_class, 0.1)
+        
     def extract_beats(self):
-        """Extract beats from audio using the complete pipeline"""
+        """Extract beats from audio using the improved hybrid pipeline"""
+        print("Starting improved hybrid onset detection pipeline...")
+        
+        # Step 1: Audio separation and tempo analysis
         self.separate_audio_tracks()
         self.detect_tempo_and_beats()
+        
+        # Step 2: ML-based onset detection
         self.load_model()
         model_input = self.preprocess_drums()
         self.predict_onsets(model_input)
         self.peak_picking()
-        self.apply_beat_based_timing()
+        
+        # Step 3: Hybrid onset detection and classification
+        fused_onsets = self.fuse_onset_detections()
+        classified_onsets = self.improve_onset_classification(fused_onsets)
+        
+        # Step 4: Apply beat-based timing to classified onsets
+        self.apply_improved_timing(classified_onsets)
+        
+        print("Improved hybrid onset detection pipeline completed")
         
     def create_chart(self):
         """Create DTX chart from onset results"""
@@ -295,6 +706,8 @@ class AudioToChart:
             
         # Copy template to output directory
         song_output_dir = os.path.join(output_dir, self.song_name)
+        if os.path.exists(song_output_dir):
+            rmtree(song_output_dir)
         copytree("/tmp/Simfiles", song_output_dir)
         
         # Handle BGM audio based on configuration
