@@ -170,6 +170,16 @@ Test the application with various audio formats:
 - Run `make run` or `python main.py <filename>`
 - Check output DTX files in `./output/` directory
 
+### Error Checking
+When testing or verifying that the application works correctly, ALWAYS analyze the standard output for error messages. Look for:
+- Failed onset detection methods (e.g., "energy: failed", "hfc: failed")
+- Python exceptions and stack traces
+- Library compatibility issues (librosa, tensorflow, spleeter)
+- File I/O errors
+- Model loading failures
+
+The application should complete successfully without "failed" messages in the onset detection output. If any onset detection methods show "failed" status, investigate and fix the underlying issues before considering the test successful.
+
 ## Coding Standards
 
 - **Language**: All code, comments, variable names, function names, and documentation must be written in English only

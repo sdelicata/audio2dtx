@@ -843,20 +843,58 @@ class AudioToChart:
             try:
                 method_name = method_config['method']
                 # Create onset strength function for this method
-                onset_strength = librosa.onset.onset_strength(
-                    y=drum_mono, 
-                    sr=self.sample_rate,
-                    hop_length=hop_length,
-                    feature=method_name,
-                    aggregate=np.median
-                )
+                if method_name == 'energy':
+                    onset_strength = librosa.onset.onset_strength(
+                        y=drum_mono, 
+                        sr=self.sample_rate,
+                        hop_length=hop_length,
+                        aggregate=np.median
+                    )
+                elif method_name == 'hfc':
+                    onset_strength = librosa.onset.onset_strength(
+                        y=drum_mono, 
+                        sr=self.sample_rate,
+                        hop_length=hop_length,
+                        feature=librosa.feature.spectral_centroid,
+                        aggregate=np.median
+                    )
+                elif method_name == 'complex':
+                    onset_strength = librosa.onset.onset_strength(
+                        y=drum_mono, 
+                        sr=self.sample_rate,
+                        hop_length=hop_length,
+                        feature=librosa.feature.spectral_rolloff,
+                        aggregate=np.median
+                    )
+                elif method_name == 'phase':
+                    onset_strength = librosa.onset.onset_strength(
+                        y=drum_mono, 
+                        sr=self.sample_rate,
+                        hop_length=hop_length,
+                        aggregate=np.median
+                    )
+                elif method_name == 'specdiff':
+                    onset_strength = librosa.onset.onset_strength(
+                        y=drum_mono, 
+                        sr=self.sample_rate,
+                        hop_length=hop_length,
+                        feature=librosa.feature.mfcc,
+                        aggregate=np.median
+                    )
+                else:
+                    onset_strength = librosa.onset.onset_strength(
+                        y=drum_mono, 
+                        sr=self.sample_rate,
+                        hop_length=hop_length,
+                        aggregate=np.median
+                    )
                 
                 # Detect onsets from strength function
                 onsets = librosa.onset.onset_detect(
                     onset_envelope=onset_strength,
                     sr=self.sample_rate,
                     hop_length=hop_length,
-                    threshold=method_config['threshold'],
+                    delta=method_config['threshold'],
                     pre_max=method_config['pre_max'],
                     post_max=method_config['post_max'],
                     pre_avg=method_config['pre_avg'],
