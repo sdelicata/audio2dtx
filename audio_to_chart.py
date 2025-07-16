@@ -9,13 +9,15 @@ from spleeter.audio.adapter import AudioAdapter
 import soundfile as sf
 import math
 from pathlib import Path
-from shutil import copytree, rmtree
+from shutil import copytree, rmtree, copy2
 
 
 class AudioToChart:
-    def __init__(self, input_audio_path):
+    def __init__(self, input_audio_path, use_original_bgm=True):
         self.input_audio_path = input_audio_path
         self.song_name = os.path.splitext(os.path.basename(input_audio_path))[0]
+        self.original_filename = os.path.basename(input_audio_path)
+        self.use_original_bgm = use_original_bgm
         self.setup_channel_mappings()
         self.model = None
         self.drum_audio = None
@@ -295,9 +297,17 @@ class AudioToChart:
         song_output_dir = os.path.join(output_dir, self.song_name)
         copytree("/tmp/Simfiles", song_output_dir)
         
-        # Save BGM audio
-        bgm_path = os.path.join(song_output_dir, 'bgm.wav')
-        sf.write(bgm_path, self.bgm_audio, 44100)
+        # Handle BGM audio based on configuration
+        if self.use_original_bgm:
+            # Copy original audio file
+            original_bgm_path = os.path.join(song_output_dir, self.original_filename)
+            copy2(self.input_audio_path, original_bgm_path)
+            print(f"Using original audio as BGM: {self.original_filename}")
+        else:
+            # Save separated BGM audio
+            bgm_path = os.path.join(song_output_dir, 'bgm.wav')
+            sf.write(bgm_path, self.bgm_audio, 44100)
+            print("Using separated BGM (without drums)")
         
         # Create DTX file
         self.create_dtx_file(song_output_dir)
@@ -347,7 +357,7 @@ class AudioToChart:
 #VOLUME1R: 10
 #PAN1R: 60
 
-#WAVZZ: bgm.wav
+#WAVZZ: {self.original_filename if self.use_original_bgm else 'bgm.wav'}
 #VOLUMEZZ: 50
 #BGMWAV: ZZ
 
