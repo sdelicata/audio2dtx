@@ -13,6 +13,8 @@ from shutil import copytree, rmtree, copy2
 from scipy.signal import savgol_filter
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
+import requests
+import json
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -221,7 +223,14 @@ class MagentaDrumClassifier:
     
     def __init__(self):
         self.model = None
+        self.config = None
         self.confidence_threshold = 0.7
+        self.sample_rate = 44100
+        # Magenta service configuration with environment detection
+        self.magenta_service_url = self._detect_magenta_service_url()
+        self.service_available = False
+        self.health_timeout = 2.0  # seconds - quick health checks
+        self.classify_timeout = 300.0  # seconds - 5 minutes for classification
         self.drum_classes = {
             0: 'kick',
             1: 'snare',
@@ -247,35 +256,205 @@ class MagentaDrumClassifier:
             'ride-bell': 8
         }
         
+    def _detect_magenta_service_url(self):
+        """Detect Magenta service URL based on environment"""
+        # Priority 1: Explicit environment variable
+        if os.getenv('MAGENTA_SERVICE_URL'):
+            return os.getenv('MAGENTA_SERVICE_URL')
+        
+        # Priority 2: Docker environment detection
+        if os.path.exists('/.dockerenv'):
+            # Inside Docker container - use service name
+            return 'http://magenta-service:5000'
+        
+        # Priority 3: Local development
+        return 'http://localhost:5000'
+        
     def load_model(self):
-        """Load the Magenta OaF Drums model"""
+        """Check Magenta service availability with improved detection"""
         try:
-            # Try to load Magenta model
-            import magenta
-            from magenta.models.onsets_frames_transcription import model_util
-            print("Loading Magenta OaF Drums model...")
-            # For now, we'll use a placeholder approach
-            # In a real implementation, you'd load the actual model
-            self.model = "placeholder_model"
-            print("Magenta model loaded successfully")
-        except ImportError:
-            print("Magenta not available, using fallback classification")
+            # Check if Magenta service is available
+            health_url = f"{self.magenta_service_url}/health"
+            print(f"Checking Magenta service at {health_url}...")
+            
+            response = requests.get(health_url, timeout=self.health_timeout)
+            
+            if response.status_code == 200:
+                health_data = response.json()
+                self.service_available = health_data.get('status') == 'healthy'
+                magenta_loaded = health_data.get('magenta_loaded', False)
+                
+                if self.service_available:
+                    print(f"✓ Magenta service available (Model loaded: {magenta_loaded})")
+                    self.model = True  # Mark as available
+                    return True
+                else:
+                    print("⚠ Magenta service unhealthy, using enhanced simulation")
+                    self.model = None
+                    return False
+            else:
+                print(f"⚠ Magenta service returned status {response.status_code}, using enhanced simulation")
+                self.service_available = False
+                self.model = None
+                return False
+                
+        except requests.exceptions.ConnectionError:
+            print("ℹ Magenta service not available - using enhanced simulation mode")
+            self.service_available = False
             self.model = None
+            return False
+        except requests.exceptions.Timeout:
+            print("⚠ Magenta service timeout - using enhanced simulation mode")
+            self.service_available = False
+            self.model = None
+            return False
+        except requests.exceptions.RequestException as e:
+            print(f"⚠ Magenta service error: {e} - using enhanced simulation mode")
+            self.service_available = False
+            self.model = None
+            return False
         except Exception as e:
-            print(f"Error loading Magenta model: {e}")
+            print(f"⚠ Unexpected error checking Magenta service: {e}")
+            print("Falling back to enhanced simulation mode")
+            self.service_available = False
             self.model = None
+            return False
+    
+    def _prepare_for_magenta(self, onset_audio):
+        """Preprocessing audio for Magenta OaF"""
+        import librosa
+        
+        # Normalize audio for Magenta
+        if np.max(np.abs(onset_audio)) > 0:
+            normalized = onset_audio / np.max(np.abs(onset_audio))
+        else:
+            normalized = onset_audio
+        
+        # Create mel-spectrogram (format expected by E-GMD)
+        try:
+            mel_spec = librosa.feature.melspectrogram(
+                y=normalized, 
+                sr=self.sample_rate,
+                n_mels=128,
+                hop_length=256,
+                n_fft=1024
+            )
+            return librosa.power_to_db(mel_spec)
+        except Exception as e:
+            print(f"Error in Magenta preprocessing: {e}")
+            # Return a default spectrogram if preprocessing fails
+            return np.zeros((128, 64))  # Default shape for mel-spectrogram
+    
+    def _enhanced_magenta_prediction(self, audio_window, spectrogram):
+        """Enhanced prediction using mel-spectrogram analysis"""
+        try:
+            # Analyze mel-spectrogram features for better classification
+            # This is an enhanced version that uses spectral data
+            
+            # Extract key features from mel-spectrogram
+            if spectrogram.size == 0:
+                return self._simulate_magenta_prediction(audio_window)
+            
+            # Calculate spectral statistics from mel-spectrogram
+            spectral_mean = np.mean(spectrogram, axis=1)  # Mean across time
+            spectral_energy = np.sum(spectrogram ** 2)
+            low_freq_energy = np.sum(spectral_mean[:32])   # Lower mel bands
+            mid_freq_energy = np.sum(spectral_mean[32:96]) # Mid mel bands  
+            high_freq_energy = np.sum(spectral_mean[96:])  # Upper mel bands
+            
+            total_energy = low_freq_energy + mid_freq_energy + high_freq_energy
+            if total_energy == 0:
+                return self._simulate_magenta_prediction(audio_window)
+            
+            # Calculate energy ratios
+            low_ratio = low_freq_energy / total_energy
+            mid_ratio = mid_freq_energy / total_energy
+            high_ratio = high_freq_energy / total_energy
+            
+            # Enhanced classification using mel-spectrogram features
+            rms = np.sqrt(np.mean(audio_window**2)) if len(audio_window) > 0 else 0
+            
+            # Kick drum: Strong low frequency energy in mel-spectrogram
+            if low_ratio > 0.6 and spectral_energy > np.percentile(spectral_mean, 75):
+                return {
+                    'instrument': 'kick', 
+                    'confidence': min(0.9, 0.7 + low_ratio * 0.3), 
+                    'velocity': min(rms * 2, 1.0)
+                }
+            
+            # Snare: Strong mid-frequency with balanced spread
+            elif mid_ratio > 0.4 and high_ratio > 0.2:
+                return {
+                    'instrument': 'snare', 
+                    'confidence': min(0.85, 0.65 + mid_ratio * 0.3), 
+                    'velocity': min(rms * 1.5, 1.0)
+                }
+            
+            # Hi-hat close: High frequency dominance, short duration
+            elif high_ratio > 0.5 and np.max(spectral_mean[96:]) > np.mean(spectral_mean):
+                return {
+                    'instrument': 'hi-hat-close', 
+                    'confidence': min(0.8, 0.6 + high_ratio * 0.25), 
+                    'velocity': min(rms * 3, 1.0)
+                }
+            
+            # Hi-hat open: High frequency with more spread
+            elif high_ratio > 0.35 and mid_ratio > 0.2:
+                return {
+                    'instrument': 'hi-hat-open', 
+                    'confidence': min(0.75, 0.55 + high_ratio * 0.3), 
+                    'velocity': min(rms * 2.5, 1.0)
+                }
+            
+            # Crash: Very high frequency spread across spectrum
+            elif high_ratio > 0.3 and np.std(spectral_mean) > np.mean(spectral_mean) * 0.5:
+                return {
+                    'instrument': 'crash', 
+                    'confidence': min(0.75, 0.5 + high_ratio * 0.4), 
+                    'velocity': min(rms * 1.5, 1.0)
+                }
+            
+            # Toms: Mid-low frequency content
+            elif low_ratio > 0.3 and mid_ratio > 0.25:
+                if np.argmax(spectral_mean[:64]) < 20:
+                    return {
+                        'instrument': 'tom-low', 
+                        'confidence': 0.65, 
+                        'velocity': min(rms * 2, 1.0)
+                    }
+                else:
+                    return {
+                        'instrument': 'tom-high', 
+                        'confidence': 0.65, 
+                        'velocity': min(rms * 2, 1.0)
+                    }
+            
+            # Ride: Mid-high frequency with sustained energy
+            elif mid_ratio > 0.3 and high_ratio > 0.25:
+                return {
+                    'instrument': 'ride', 
+                    'confidence': 0.6, 
+                    'velocity': min(rms * 1.5, 1.0)
+                }
+            
+            # Fallback to original simulation
+            else:
+                return self._simulate_magenta_prediction(audio_window)
+                
+        except Exception as e:
+            print(f"Error in enhanced Magenta prediction: {e}")
+            return self._simulate_magenta_prediction(audio_window)
             
     def classify_onset(self, audio_window, onset_time):
-        """Classify a single onset using Magenta model"""
-        if self.model is None:
+        """Classify a single onset using Magenta service"""
+        if not self.service_available or self.model is None:
             return self._fallback_classification(audio_window, onset_time)
             
         try:
-            # For now, simulate Magenta classification
-            # In a real implementation, this would use the actual model
-            prediction = self._simulate_magenta_prediction(audio_window)
+            # Use Magenta service for real classification
+            prediction = self._call_magenta_service(audio_window)
             
-            if prediction['confidence'] > self.confidence_threshold:
+            if prediction and prediction['confidence'] > self.confidence_threshold:
                 return {
                     'instrument': prediction['instrument'],
                     'confidence': prediction['confidence'],
@@ -286,8 +465,53 @@ class MagentaDrumClassifier:
                 return self._fallback_classification(audio_window, onset_time)
                 
         except Exception as e:
-            print(f"Error in Magenta classification: {e}")
+            print(f"Error in Magenta service classification: {e}")
             return self._fallback_classification(audio_window, onset_time)
+    
+    def _call_magenta_service(self, audio_window):
+        """Make HTTP call to Magenta service for drum classification"""
+        try:
+            classify_url = f"{self.magenta_service_url}/classify-drums"
+            
+            # Prepare payload
+            payload = {
+                'audio_window': audio_window.tolist()  # Convert numpy array to list
+            }
+            
+            # Make HTTP request
+            response = requests.post(
+                classify_url, 
+                json=payload, 
+                timeout=self.classify_timeout,
+                headers={'Content-Type': 'application/json'}
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                if result.get('success', False):
+                    prediction = result.get('prediction', {})
+                    return {
+                        'instrument': prediction.get('instrument', 'snare'),
+                        'confidence': float(prediction.get('confidence', 0.5)),
+                        'velocity': float(prediction.get('velocity', 0.5))
+                    }
+                else:
+                    print(f"Magenta service returned error: {result.get('error', 'Unknown error')}")
+                    return None
+            else:
+                print(f"Magenta service HTTP error: {response.status_code}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            print("Magenta service request timeout")
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"Magenta service request failed: {e}")
+            return None
+        except Exception as e:
+            print(f"Error calling Magenta service: {e}")
+            return None
     
     def _simulate_magenta_prediction(self, audio_window):
         """Simulate Magenta model prediction (placeholder)"""

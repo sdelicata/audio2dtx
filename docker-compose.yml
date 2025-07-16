@@ -1,0 +1,48 @@
+services:
+  # Main audio2dtx processing service
+  audio2dtx-main:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: audio2dtx-main
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+    environment:
+      - MAGENTA_SERVICE_URL=http://magenta-service:5000
+    depends_on:
+      - magenta-service
+    networks:
+      - audio2dtx-network
+    stdin_open: true
+    tty: true
+
+  # Magenta drum classification microservice
+  magenta-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.magenta
+    container_name: audio2dtx-magenta
+    environment:
+      - FLASK_ENV=production
+      - FLASK_APP=magenta_service.py
+    expose:
+      - "5000"
+    networks:
+      - audio2dtx-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+networks:
+  audio2dtx-network:
+    driver: bridge
+
+# Optional volumes for persistent model storage
+volumes:
+  magenta-models:
+    driver: local

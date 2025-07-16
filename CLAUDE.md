@@ -180,6 +180,15 @@ When testing or verifying that the application works correctly, ALWAYS analyze t
 
 The application should complete successfully without "failed" messages in the onset detection output. If any onset detection methods show "failed" status, investigate and fix the underlying issues before considering the test successful.
 
+### Optional Dependencies
+
+**Magenta Integration**: The system supports Google's Magenta library for enhanced drum classification but does not require it. If you see "Magenta not available, using fallback classification", this is normal and acceptable behavior.
+
+- **With Magenta**: Uses Google's OaF (Onsets and Frames) Drums model for more accurate drum instrument classification (40% weight in hybrid system)
+- **Without Magenta**: Uses frequency-based fallback classification (simpler but functional)
+- **Installation**: Adding Magenta requires resolving complex dependency conflicts with numpy/librosa/matplotlib versions
+- **Recommendation**: The fallback classification provides adequate results for most use cases
+
 ## Coding Standards
 
 - **Language**: All code, comments, variable names, function names, and documentation must be written in English only
