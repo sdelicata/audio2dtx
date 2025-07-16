@@ -13,10 +13,13 @@ Audio2DTX is a Python-based tool that converts audio files into DTXMania drummin
 # Build the Docker image
 make build
 
-# Run conversion with audio file
+# Run conversion with audio file (batch mode - no interaction)
 make run
 
-# Test the application
+# Run conversion with interactive metadata prompts
+make run-interactive
+
+# Test the application (batch mode)
 make test
 
 # Clean up Docker images and output
@@ -28,8 +31,11 @@ make clean
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Run the application
+# Run the application (interactive mode)
 python main.py <input_audio_file>
+
+# Run the application (batch mode with defaults)
+python main.py <input_audio_file> --batch
 ```
 
 ## Architecture Overview
@@ -120,6 +126,32 @@ The application runs in a containerized environment with:
 ### Audio Utilities
 - `pydub==0.25.1`: Audio format handling
 - `matplotlib==3.6.3`: Visualization support
+
+## Usage Modes
+
+### Interactive Mode (Default)
+When run in an interactive environment with TTY support, the application prompts for metadata:
+- Song title
+- Artist name
+- Author/Charter name
+- Difficulty level (1-100)
+- Use original audio as BGM (yes/no)
+- Time signature (4/4, 3/4, 6/8, 2/4, 5/4)
+- Genre
+- Custom comment
+
+### Batch Mode
+For automated processing or non-interactive environments:
+- Uses default metadata values
+- No user prompts
+- Suitable for CI/CD pipelines and scripts
+- Activated with `--batch` flag or automatically detected in non-TTY environments
+
+### Environment Detection
+The application automatically detects the runtime environment:
+- Interactive: TTY available, prompts for metadata
+- Non-interactive: No TTY (Docker, scripts), uses defaults
+- Explicit: Use `--batch` or `--interactive` flags to override
 
 ## Current Development Status
 
