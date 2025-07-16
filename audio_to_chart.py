@@ -66,6 +66,10 @@ class AudioToChart:
         # Load audio file
         waveform, _ = audio_loader.load(self.input_audio_path, sample_rate=44100)
         
+        # Store original audio for tempo analysis
+        self.original_audio = librosa.to_mono(np.transpose(waveform))
+        self.sample_rate = 44100
+        
         # Perform separation
         prediction = separator.separate(waveform)
         
@@ -80,6 +84,66 @@ class AudioToChart:
         self.bgm_audio = (sound1 + sound2 + sound3) / 3
         
         print("Audio separation completed")
+        
+    def detect_tempo_and_beats(self):
+        """Detect tempo and beat positions from audio"""
+        print("Analyzing tempo and beats...")
+        
+        # Detect tempo and beat frames
+        tempo, beats = librosa.beat.beat_track(y=self.original_audio, sr=self.sample_rate)
+        
+        # Convert beat frames to time positions
+        beat_times = librosa.frames_to_time(beats, sr=self.sample_rate)
+        
+        # Calculate dynamic tempo curve
+        tempo_curve = librosa.beat.tempo(y=self.original_audio, sr=self.sample_rate, hop_length=512)
+        
+        # Store tempo information
+        self.tempo_bpm = float(tempo)
+        self.beat_times = beat_times
+        self.tempo_curve = tempo_curve
+        
+        print(f"Detected tempo: {self.tempo_bpm:.1f} BPM")
+        print(f"Found {len(beat_times)} beats")
+        
+        return tempo, beat_times, tempo_curve
+        
+    def quantize_onsets_to_beats(self, onset_times, beat_times):
+        """Quantize onset times to the nearest beat positions"""
+        print("Quantizing onsets to beats...")
+        
+        quantized_onsets = []
+        
+        for onset_time in onset_times:
+            # Find closest beat
+            closest_beat_idx = np.argmin(np.abs(beat_times - onset_time))
+            closest_beat_time = beat_times[closest_beat_idx]
+            
+            # Only quantize if within reasonable distance (quarter note)
+            quarter_note_duration = 60.0 / self.tempo_bpm
+            if abs(onset_time - closest_beat_time) < quarter_note_duration * 0.5:
+                quantized_onsets.append(closest_beat_time)
+            else:
+                # Keep original timing for off-beat notes
+                quantized_onsets.append(onset_time)
+        
+        print(f"Quantized {len(quantized_onsets)} onsets to beats")
+        return np.array(quantized_onsets)
+        
+    def calculate_adaptive_bar_timing(self, beat_times):
+        """Calculate bar positions based on detected beats"""
+        # Assume 4/4 time signature
+        beats_per_bar = 4
+        
+        bar_positions = []
+        bar_times = []
+        
+        for i in range(0, len(beat_times), beats_per_bar):
+            if i < len(beat_times):
+                bar_positions.append(i // beats_per_bar)
+                bar_times.append(beat_times[i])
+                
+        return np.array(bar_positions), np.array(bar_times)
         
     def to_spectrogram(self, mono_audio, time_per_hop, sr=44100):
         """Convert mono audio to mel-spectrogram"""
@@ -170,13 +234,45 @@ class AudioToChart:
         self.onset_results = onset_each_class
         print("Peak picking completed")
         
+    def apply_beat_based_timing(self):
+        """Convert onset results to beat-based timing"""
+        print("Applying beat-based timing...")
+        
+        # Convert onset results to time-based format
+        time_per_hop = 0.01  # From preprocessing
+        onset_times_per_class = []
+        
+        for class_idx in range(self.num_class):
+            class_onset_times = []
+            for time_idx, has_onset in enumerate(self.onset_results[class_idx]):
+                if has_onset == 1:
+                    onset_time = time_idx * time_per_hop
+                    class_onset_times.append(onset_time)
+            onset_times_per_class.append(class_onset_times)
+        
+        # Quantize onsets to beat positions for each class
+        self.beat_aligned_onsets = []
+        for class_idx in range(self.num_class):
+            if len(onset_times_per_class[class_idx]) > 0:
+                quantized_times = self.quantize_onsets_to_beats(
+                    onset_times_per_class[class_idx], 
+                    self.beat_times
+                )
+                self.beat_aligned_onsets.append(quantized_times)
+            else:
+                self.beat_aligned_onsets.append([])
+        
+        print("Beat-based timing applied")
+        
     def extract_beats(self):
         """Extract beats from audio using the complete pipeline"""
         self.separate_audio_tracks()
+        self.detect_tempo_and_beats()
         self.load_model()
         model_input = self.preprocess_drums()
         self.predict_onsets(model_input)
         self.peak_picking()
+        self.apply_beat_based_timing()
         
     def create_chart(self):
         """Create DTX chart from onset results"""
@@ -218,7 +314,7 @@ class AudioToChart:
 
 #TITLE: {self.song_name}
 #ARTIST: -
-#BPM: 120
+#BPM: {self.tempo_bpm:.0f}
 #DLEVEL: 1
 #HIDDENLEVEL ON
 
@@ -276,26 +372,61 @@ class AudioToChart:
             dtx_file.write(dtx_header)
             
             bar_before_song_begin = 2
-            bar = 0
-            old_bar = bar
-            notes = [""] * self.num_class
+            
+            # Calculate bars and their timing based on detected beats
+            bar_positions, bar_times = self.calculate_adaptive_bar_timing(self.beat_times)
             
             # Line to start BGM
-            dtx_file.write(f'#{int(old_bar + bar_before_song_begin):03}01: ZZ\n')
+            dtx_file.write(f'#{bar_before_song_begin:03}01: ZZ\n')
             
-            for time, onset in enumerate(np.transpose(self.onset_results)):
-                for instrument, result in enumerate(onset):
-                    if result == 1:
-                        notes[instrument] += wav_mappings[instrument]
-                    elif result == 0:
-                        notes[instrument] += "00"
-                        
-                bar = math.floor(time / (2 * 100))
-                if old_bar != bar:
-                    for instrument in range(len(onset)):
-                        dtx_file.write(f'#{int(old_bar + bar_before_song_begin):03}{self.INT_TO_CHANNEL[instrument]}: {notes[instrument]}\n')
-                    notes = [""] * self.num_class
-                    old_bar = bar
+            # Generate notes based on beat-aligned onsets
+            self.generate_beat_based_notes(dtx_file, bar_before_song_begin, wav_mappings)
+            
+    def generate_beat_based_notes(self, dtx_file, bar_offset, wav_mappings):
+        """Generate DTX notes based on beat-aligned timing"""
+        print("Generating beat-based DTX notes...")
+        
+        # Calculate total song duration and resolution
+        song_duration = len(self.beat_times) * (60.0 / self.tempo_bpm)
+        resolution = 192  # DTX resolution per quarter note
+        
+        # Create note grid based on beats
+        max_bars = int(song_duration / (240.0 / self.tempo_bpm)) + 1  # 4 beats per bar
+        note_grid = {}
+        
+        for bar_num in range(max_bars):
+            for instrument in range(self.num_class):
+                channel = self.INT_TO_CHANNEL[instrument]
+                note_grid[f'{bar_num}_{channel}'] = ['00'] * resolution
+        
+        # Place notes from beat-aligned onsets
+        for instrument in range(self.num_class):
+            channel = self.INT_TO_CHANNEL[instrument]
+            
+            for onset_time in self.beat_aligned_onsets[instrument]:
+                # Convert time to bar and position
+                bar_num = int(onset_time / (240.0 / self.tempo_bpm))
+                bar_time = onset_time - (bar_num * (240.0 / self.tempo_bpm))
+                position = int((bar_time / (240.0 / self.tempo_bpm)) * resolution)
+                
+                if position < resolution and bar_num < max_bars:
+                    key = f'{bar_num}_{channel}'
+                    if key in note_grid:
+                        note_grid[key][position] = wav_mappings[instrument]
+        
+        # Write notes to DTX file
+        for bar_num in range(max_bars):
+            for instrument in range(self.num_class):
+                channel = self.INT_TO_CHANNEL[instrument]
+                key = f'{bar_num}_{channel}'
+                
+                if key in note_grid:
+                    notes_line = ''.join(note_grid[key])
+                    # Only write non-empty lines
+                    if notes_line.replace('00', ''):
+                        dtx_file.write(f'#{bar_num + bar_offset:03}{channel}: {notes_line}\n')
+        
+        print("Beat-based DTX notes generated")
                     
     def zip_directory(self, folder_path, zip_path):
         """Create ZIP file from directory"""
