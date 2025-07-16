@@ -1,56 +1,61 @@
+import sys
 import os
-import numpy as np
-import librosa
-import librosa.display
-import soundfile as sf
-import matplotlib.pyplot as plt
-from spleeter.separator import Separator
-from spleeter.audio.adapter import AudioAdapter
+import logging
+from audio_to_chart import AudioToChart
 
-INPUT_FILE = 'input/song.mp3'
-OUTPUT_DIR = 'output'
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# Initialiser
-separator = Separator('spleeter:4stems')
-audio_loader = AudioAdapter.default()
+def main():
+    """Main entry point for audio to DTX conversion"""
+    if len(sys.argv) < 2:
+        print("Usage: python main.py <input_audio_file>")
+        print("Example: python main.py song.mp3")
+        sys.exit(1)
 
-# Charger l'audio
-print(f"🔊 Chargement de {INPUT_FILE}")
-waveform, _ = audio_loader.load(INPUT_FILE, sample_rate=44100)
+    input_filename = sys.argv[1]
+    input_audio = f"/app/input/{input_filename}"
+    output_dir = "/app/output"
 
-# Séparer les stems
-print("🎛️ Séparation des stems...")
-prediction = separator.separate(waveform)
+    # Validate input file
+    if not os.path.exists(input_audio):
+        logger.error(f"File not found: {input_audio}")
+        sys.exit(1)
 
-# Créer output dir
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Validate audio file format
+    valid_formats = ['.mp3', '.wav', '.flac', '.ogg', '.m4a']
+    file_ext = os.path.splitext(input_filename)[1].lower()
+    if file_ext not in valid_formats:
+        logger.error(f"Unsupported audio format: {file_ext}")
+        logger.error(f"Supported formats: {', '.join(valid_formats)}")
+        sys.exit(1)
 
-# Exporter tous les stems séparément
-for stem in prediction:
-    print(f"💾 Export du stem : {stem}")
-    stem_mono = librosa.to_mono(np.transpose(prediction[stem]))
-    sf.write(os.path.join(OUTPUT_DIR, f"{stem}.wav"), stem_mono, 44100)
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
 
-# Créer le BGM (tout sauf drums)
-print("🎼 Construction du BGM (sans drums)...")
-bgm = (librosa.to_mono(np.transpose(prediction['vocals'])) +
-       librosa.to_mono(np.transpose(prediction['bass'])) +
-       librosa.to_mono(np.transpose(prediction['other']))) / 3
+    try:
+        logger.info(f"Starting processing: {input_filename}")
+        
+        # Create chart converter instance
+        chart = AudioToChart(input_audio)
+        
+        # Extract beats from audio
+        logger.info("Extracting beats and creating chart...")
+        chart.extract_beats()
+        
+        # Create DTX chart
+        chart.create_chart()
+        
+        # Export complete simfile
+        chart.export(output_dir)
+        
+        logger.info(f"✅ Successfully converted {input_filename} to DTXMania simfile")
+        logger.info(f"📁 Output saved to: {output_dir}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing audio file: {str(e)}")
+        sys.exit(1)
 
-sf.write(os.path.join(OUTPUT_DIR, "bgm.wav"), bgm, 44100)
-print("✅ bgm.wav exporté")
-
-# (Optionnel) Générer un spectrogramme pour chaque stem
-print("📊 Génération des spectrogrammes...")
-for stem in prediction:
-    y = librosa.to_mono(np.transpose(prediction[stem]))
-    S = librosa.feature.melspectrogram(y=y, sr=44100, n_mels=128)
-    S_dB = librosa.power_to_db(S, ref=np.max)
-
-    plt.figure(figsize=(10, 4))
-    librosa.display.specshow(S_dB, sr=44100, x_axis='time', y_axis='mel')
-    plt.colorbar(format='%+2.0f dB')
-    plt.title(f"Spectrogramme - {stem}")
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, f"{stem}_spectrogram.png"))
-    plt.close()
+if __name__ == "__main__":
+    main()
