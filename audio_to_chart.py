@@ -10,6 +10,11 @@ import soundfile as sf
 import math
 from pathlib import Path
 from shutil import copytree, rmtree, copy2
+from scipy.signal import savgol_filter
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+import warnings
+warnings.filterwarnings('ignore')
 
 
 class AudioToChart:
