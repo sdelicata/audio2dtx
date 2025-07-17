@@ -18,6 +18,7 @@ def get_default_metadata(input_filename):
         'title': os.path.splitext(input_filename)[0],
         'artist': 'Unknown Artist',
         'author': 'Audio2DTX',
+        'difficulty': 5,
         'use_original_bgm': True,
         'time_signature': '4/4',
         'genre': 'Rock',
@@ -61,6 +62,22 @@ def collect_metadata(input_filename, args=None):
     else:
         author = input("Author/Charter [Audio2DTX]: ").strip()
         metadata['author'] = author if author else "Audio2DTX"
+    
+    # Difficulty level
+    while True:
+        try:
+            difficulty = input("Difficulty level (1-100) [5]: ").strip()
+            if not difficulty:
+                metadata['difficulty'] = 5
+                break
+            difficulty_val = int(difficulty)
+            if 1 <= difficulty_val <= 100:
+                metadata['difficulty'] = difficulty_val
+                break
+            else:
+                print("Please enter a number between 1 and 100.")
+        except ValueError:
+            print("Please enter a valid number.")
     
     # Use original audio as BGM
     if args and args.use_original_bgm is not None:
@@ -124,6 +141,7 @@ def collect_metadata(input_filename, args=None):
     print(f"Title: {metadata['title']}")
     print(f"Artist: {metadata['artist']}")
     print(f"Author: {metadata['author']}")
+    print(f"Difficulty: {metadata['difficulty']}")
     print(f"Use Original BGM: {'Yes' if metadata['use_original_bgm'] else 'No'}")
     print(f"Time Signature: {metadata['time_signature']}")
     print(f"Genre: {metadata['genre']}")
