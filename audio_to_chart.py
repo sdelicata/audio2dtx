@@ -13,6 +13,9 @@ from shutil import copytree, rmtree, copy2
 from scipy.signal import savgol_filter
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import GridSearchCV
+from scipy.stats import skew, kurtosis
 import requests
 import json
 import warnings
@@ -216,6 +219,298 @@ class AdvancedFeatureExtractor:
             return combined_features, features_dict
         except Exception:
             return np.zeros(47), {}
+
+
+class AdvancedSpectralFeatureExtractor(AdvancedFeatureExtractor):
+    """Enhanced feature extractor for Track 4 with advanced spectral features and context"""
+    
+    def __init__(self, sr=44100, n_mfcc=13, n_chroma=12, n_contrast=7):
+        super().__init__(sr, n_mfcc, n_chroma, n_contrast)
+        self.beat_times = None
+        self.rf_classifier = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.is_trained = False
+        
+    def set_beat_times(self, beat_times):
+        """Set beat times for beat-synchronous feature extraction"""
+        self.beat_times = beat_times
+        
+    def extract_delta_mfcc(self, audio_window):
+        """Extract MFCC delta and delta-delta coefficients"""
+        try:
+            # Extract MFCC
+            mfcc = librosa.feature.mfcc(
+                y=audio_window, 
+                sr=self.sr, 
+                n_mfcc=self.n_mfcc,
+                hop_length=512,
+                n_fft=2048
+            )
+            
+            # Calculate delta and delta-delta coefficients
+            delta_mfcc = librosa.feature.delta(mfcc)
+            delta2_mfcc = librosa.feature.delta(mfcc, order=2)
+            
+            # Take mean across time for each coefficient
+            mfcc_mean = np.mean(mfcc, axis=1)
+            delta_mean = np.mean(delta_mfcc, axis=1)  
+            delta2_mean = np.mean(delta2_mfcc, axis=1)
+            
+            # Combine all (39 features total: 13 + 13 + 13)
+            return np.concatenate([mfcc_mean, delta_mean, delta2_mean])
+            
+        except Exception:
+            return np.zeros(39)
+    
+    def extract_multi_scale_features(self, audio_window, scales=[256, 512, 1024, 2048]):
+        """Extract features at multiple temporal scales"""
+        try:
+            multi_scale_features = []
+            
+            for hop_length in scales:
+                # Spectral centroid at different scales
+                centroid = librosa.feature.spectral_centroid(
+                    y=audio_window, sr=self.sr, hop_length=hop_length
+                )
+                
+                # Spectral rolloff at different scales
+                rolloff = librosa.feature.spectral_rolloff(
+                    y=audio_window, sr=self.sr, hop_length=hop_length
+                )
+                
+                # RMS energy at different scales
+                rms = librosa.feature.rms(y=audio_window, hop_length=hop_length)
+                
+                # Combine features for this scale
+                scale_features = np.array([
+                    np.mean(centroid),
+                    np.mean(rolloff), 
+                    np.mean(rms)
+                ])
+                
+                multi_scale_features.extend(scale_features)
+            
+            return np.array(multi_scale_features)  # 12 features (3 * 4 scales)
+            
+        except Exception:
+            return np.zeros(12)
+    
+    def extract_spectral_statistics(self, audio_window):
+        """Extract advanced spectral statistics"""
+        try:
+            # Get spectrum
+            stft = librosa.stft(audio_window, hop_length=512, n_fft=2048)
+            magnitude = np.abs(stft)
+            
+            # Calculate spectrum statistics
+            spectrum_mean = np.mean(magnitude, axis=1)
+            spectrum_std = np.std(magnitude, axis=1)
+            
+            # Overall spectral statistics
+            spectral_features = []
+            
+            # Spectral kurtosis (measure of "spikiness")
+            spectral_kurtosis = kurtosis(spectrum_mean)
+            spectral_features.append(spectral_kurtosis)
+            
+            # Spectral skewness (measure of asymmetry)
+            spectral_skewness = skew(spectrum_mean)
+            spectral_features.append(spectral_skewness)
+            
+            # Spectral entropy (measure of complexity)
+            spectrum_normalized = spectrum_mean / np.sum(spectrum_mean)
+            spectral_entropy = -np.sum(spectrum_normalized * np.log2(spectrum_normalized + 1e-10))
+            spectral_features.append(spectral_entropy)
+            
+            # Spectral flux (measure of variation)
+            spectral_flux = np.sum(np.diff(magnitude, axis=1) ** 2)
+            spectral_features.append(spectral_flux)
+            
+            # Spectral slope (measure of brightness)
+            freqs = librosa.fft_frequencies(sr=self.sr, n_fft=2048)
+            spectral_slope = np.polyfit(freqs, spectrum_mean, 1)[0]
+            spectral_features.append(spectral_slope)
+            
+            return np.array(spectral_features)  # 5 features
+            
+        except Exception:
+            return np.zeros(5)
+    
+    def extract_multi_band_features(self, audio_window):
+        """Extract features from drum-specific frequency bands"""
+        try:
+            # Define drum-specific frequency bands
+            bands = [
+                (20, 100),    # Sub-bass (kick fundamentals)
+                (100, 250),   # Bass (kick attack)
+                (250, 500),   # Low-mid (snare body)
+                (500, 1000),  # Mid (snare attack)
+                (1000, 2000), # High-mid (toms)
+                (2000, 4000), # High (hi-hat)
+                (4000, 8000), # Very high (cymbals)
+                (8000, 16000) # Ultra high (cymbal shimmer)
+            ]
+            
+            # Get spectrum
+            stft = librosa.stft(audio_window, hop_length=512, n_fft=2048)
+            magnitude = np.abs(stft)
+            freqs = librosa.fft_frequencies(sr=self.sr, n_fft=2048)
+            
+            band_features = []
+            
+            for low_freq, high_freq in bands:
+                # Find frequency indices for this band
+                low_idx = np.argmin(np.abs(freqs - low_freq))
+                high_idx = np.argmin(np.abs(freqs - high_freq))
+                
+                # Extract band magnitude
+                band_magnitude = magnitude[low_idx:high_idx, :]
+                
+                # Calculate band features
+                band_energy = np.mean(np.sum(band_magnitude, axis=0))
+                band_peak = np.max(np.mean(band_magnitude, axis=1))
+                band_centroid = np.sum(freqs[low_idx:high_idx] * np.mean(band_magnitude, axis=1)) / np.sum(np.mean(band_magnitude, axis=1))
+                
+                band_features.extend([band_energy, band_peak, band_centroid])
+            
+            return np.array(band_features)  # 24 features (3 * 8 bands)
+            
+        except Exception:
+            return np.zeros(24)
+    
+    def extract_harmonic_percussive_features(self, audio_window):
+        """Extract features from harmonic and percussive components"""
+        try:
+            # Separate harmonic and percussive components
+            harmonic, percussive = librosa.effects.hpss(audio_window)
+            
+            # Features from harmonic component
+            harmonic_rms = np.mean(librosa.feature.rms(y=harmonic))
+            harmonic_centroid = np.mean(librosa.feature.spectral_centroid(y=harmonic, sr=self.sr))
+            
+            # Features from percussive component
+            percussive_rms = np.mean(librosa.feature.rms(y=percussive))
+            percussive_centroid = np.mean(librosa.feature.spectral_centroid(y=percussive, sr=self.sr))
+            
+            # Ratio features
+            hp_ratio = harmonic_rms / (percussive_rms + 1e-10)
+            
+            return np.array([harmonic_rms, harmonic_centroid, percussive_rms, percussive_centroid, hp_ratio])  # 5 features
+            
+        except Exception:
+            return np.zeros(5)
+    
+    def extract_beat_synchronous_features(self, audio_window, onset_time):
+        """Extract features aligned to beat positions"""
+        try:
+            if self.beat_times is None:
+                # Fall back to regular temporal features
+                return self.extract_temporal_features(audio_window)
+            
+            # Find closest beat
+            beat_diffs = np.abs(np.array(self.beat_times) - onset_time)
+            closest_beat_idx = np.argmin(beat_diffs)
+            
+            # Calculate beat position within measure (assuming 4/4 time)
+            beat_position = (closest_beat_idx % 4) / 4.0
+            
+            # Calculate distance from beat
+            beat_distance = np.min(beat_diffs)
+            
+            # Extract regular temporal features
+            temporal_features = self.extract_temporal_features(audio_window)
+            
+            # Add beat-specific features
+            beat_features = np.array([beat_position, beat_distance])
+            
+            return np.concatenate([temporal_features, beat_features])  # 7 features (5 + 2)
+            
+        except Exception:
+            return np.zeros(7)
+    
+    def extract_comprehensive_advanced_features(self, audio_window, onset_time=None):
+        """Extract all advanced features for Track 4"""
+        try:
+            # Extract all advanced feature types
+            delta_mfcc = self.extract_delta_mfcc(audio_window)                    # 39 features
+            multi_scale = self.extract_multi_scale_features(audio_window)         # 12 features
+            spectral_stats = self.extract_spectral_statistics(audio_window)       # 5 features
+            multi_band = self.extract_multi_band_features(audio_window)           # 24 features
+            harmonic_percussive = self.extract_harmonic_percussive_features(audio_window)  # 5 features
+            
+            # Beat-synchronous features (if onset time provided)
+            if onset_time is not None:
+                beat_sync = self.extract_beat_synchronous_features(audio_window, onset_time)  # 7 features
+            else:
+                beat_sync = self.extract_temporal_features(audio_window)          # 5 features
+            
+            # Original basic features for comparison
+            original_features, _ = self.extract_comprehensive_features(audio_window)  # 47 features
+            
+            # Combine all features
+            advanced_features = np.concatenate([
+                delta_mfcc,           # 39 features
+                multi_scale,          # 12 features  
+                spectral_stats,       # 5 features
+                multi_band,           # 24 features
+                harmonic_percussive,  # 5 features
+                beat_sync,            # 7 features
+                original_features     # 47 features
+            ])
+            
+            # Total: 139 features
+            return advanced_features
+            
+        except Exception:
+            return np.zeros(139)
+    
+    def train_random_forest(self, features, labels):
+        """Train Random Forest classifier on extracted features"""
+        try:
+            # Hyperparameter tuning
+            param_grid = {
+                'n_estimators': [50, 100, 200],
+                'max_depth': [10, 20, None],
+                'min_samples_split': [2, 5, 10],
+                'min_samples_leaf': [1, 2, 4]
+            }
+            
+            # Grid search with cross-validation
+            grid_search = GridSearchCV(
+                RandomForestClassifier(random_state=42),
+                param_grid,
+                cv=5,
+                scoring='accuracy',
+                n_jobs=-1
+            )
+            
+            grid_search.fit(features, labels)
+            
+            # Use best estimator
+            self.rf_classifier = grid_search.best_estimator_
+            self.is_trained = True
+            
+            return grid_search.best_score_
+            
+        except Exception as e:
+            print(f"Error training Random Forest: {e}")
+            return 0.0
+    
+    def classify_with_random_forest(self, features):
+        """Classify using trained Random Forest"""
+        try:
+            if not self.is_trained:
+                # Fall back to simple frequency classification
+                return 2  # Default to kick
+            
+            # Get prediction and confidence
+            prediction = self.rf_classifier.predict([features])[0]
+            probabilities = self.rf_classifier.predict_proba([features])[0]
+            confidence = np.max(probabilities)
+            
+            return prediction, confidence
+            
+        except Exception:
+            return 2, 0.5  # Default to kick with medium confidence
 
 
 class MagentaDrumClassifier:
@@ -837,10 +1132,11 @@ class HybridDrumClassifier:
 
 
 class AudioToChart:
-    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False):
+    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False, use_advanced_features=False):
         self.input_audio_path = input_audio_path
         self.original_filename = os.path.basename(input_audio_path)
         self.use_magenta_only = use_magenta_only  # Track 3 parameter
+        self.use_advanced_features = use_advanced_features  # Track 4 parameter
         
         # Initialize metadata with defaults or provided values
         if metadata is None:
@@ -1566,6 +1862,114 @@ class AudioToChart:
         
         return classified_onsets
     
+    def advanced_features_classification(self, fused_onsets):
+        """Track 4: Advanced spectral features + context classification"""
+        print("🔬 Track 4: Advanced spectral features + context classification...")
+        
+        # Initialize advanced feature extractor
+        advanced_extractor = AdvancedSpectralFeatureExtractor()
+        advanced_extractor.set_beat_times(self.beat_times)
+        
+        classified_onsets = [[] for _ in range(self.num_class)]
+        
+        # Collect features and labels for training if we have enough data
+        if len(fused_onsets) > 20:  # Need sufficient data for training
+            print("🧠 Collecting features for Random Forest training...")
+            features_list = []
+            labels_list = []
+            
+            # First pass: collect features and get initial labels using simple classification
+            for onset_time in fused_onsets:
+                try:
+                    # Extract audio window
+                    start_sample = int((onset_time - 0.05) * self.sample_rate)
+                    end_sample = int((onset_time + 0.05) * self.sample_rate)
+                    start_sample = max(0, start_sample)
+                    end_sample = min(len(self.drum_audio), end_sample)
+                    
+                    if end_sample - start_sample < 100:
+                        continue
+                    
+                    window = self.drum_audio[start_sample:end_sample]
+                    
+                    # Extract advanced features
+                    features = advanced_extractor.extract_comprehensive_advanced_features(window, onset_time)
+                    
+                    # Get initial label using simple frequency classification
+                    initial_label = self._simple_frequency_classify(window)
+                    
+                    features_list.append(features)
+                    labels_list.append(initial_label)
+                    
+                except Exception as e:
+                    print(f"⚠️  Error extracting features for onset {onset_time}: {e}")
+                    continue
+            
+            # Train Random Forest if we have enough samples
+            if len(features_list) >= 10:
+                print(f"🌲 Training Random Forest with {len(features_list)} samples...")
+                features_array = np.array(features_list)
+                labels_array = np.array(labels_list)
+                
+                # Train the classifier
+                training_score = advanced_extractor.train_random_forest(features_array, labels_array)
+                print(f"🎯 Random Forest training score: {training_score:.3f}")
+                
+                # Second pass: classify with trained model
+                print("🔍 Classifying onsets with trained Random Forest...")
+                for i, onset_time in enumerate(fused_onsets):
+                    try:
+                        if i < len(features_list):
+                            features = features_list[i]
+                            
+                            # Classify with Random Forest
+                            prediction, confidence = advanced_extractor.classify_with_random_forest(features)
+                            
+                            # Only use prediction if confidence is high enough
+                            if confidence > 0.6:
+                                classified_onsets[prediction].append(onset_time)
+                            else:
+                                # Fall back to simple frequency classification
+                                simple_prediction = labels_list[i]
+                                classified_onsets[simple_prediction].append(onset_time)
+                        else:
+                            # Fall back for any missing features
+                            start_sample = int((onset_time - 0.05) * self.sample_rate)
+                            end_sample = int((onset_time + 0.05) * self.sample_rate)
+                            start_sample = max(0, start_sample)
+                            end_sample = min(len(self.drum_audio), end_sample)
+                            
+                            if end_sample - start_sample >= 100:
+                                window = self.drum_audio[start_sample:end_sample]
+                                simple_prediction = self._simple_frequency_classify(window)
+                                classified_onsets[simple_prediction].append(onset_time)
+                            else:
+                                classified_onsets[2].append(onset_time)  # Default to kick
+                                
+                    except Exception as e:
+                        print(f"⚠️  Error classifying onset {onset_time}: {e}")
+                        classified_onsets[2].append(onset_time)  # Default to kick
+                        
+            else:
+                print("⚠️  Not enough samples for Random Forest training, using simple classification")
+                # Fall back to simple frequency classification
+                return self._simple_frequency_classification(fused_onsets)
+                
+        else:
+            print("⚠️  Not enough onsets for advanced classification, using simple classification")
+            # Fall back to simple frequency classification
+            return self._simple_frequency_classification(fused_onsets)
+        
+        # Log results
+        total_classified = sum(len(class_onsets) for class_onsets in classified_onsets)
+        print(f"🔬 Advanced features classified {total_classified} onsets:")
+        instrument_names = ['Hi-hat Close', 'Snare', 'Bass Drum', 'High Tom', 'Low Tom', 'Ride', 'Floor Tom', 'Hi-hat Open', 'Ride Bell', 'Crash']
+        for i, count in enumerate([len(class_onsets) for class_onsets in classified_onsets]):
+            if count > 0:
+                print(f"  {instrument_names[i]}: {count} onsets")
+        
+        return classified_onsets
+    
     def hybrid_onset_classification(self, fused_onsets):
         """Ultra-improved instrument classification using hybrid approach"""
         print("Ultra-improved hybrid onset classification...")
@@ -1764,8 +2168,11 @@ class AudioToChart:
         # Step 3: Ultra-improved hybrid onset detection and classification
         fused_onsets = self.fuse_onset_detections()
         
-        # Track 3: Use Magenta-only classification if enabled
-        if self.use_magenta_only:
+        # Track selection for different classification approaches
+        if self.use_advanced_features:
+            print("🔬 Track 4: Using advanced spectral features + context")
+            classified_onsets = self.advanced_features_classification(fused_onsets)
+        elif self.use_magenta_only:
             print("🔮 Track 3: Using Magenta-only classification")
             classified_onsets = self.magenta_only_classification(fused_onsets)
         else:
