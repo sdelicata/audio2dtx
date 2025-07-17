@@ -164,6 +164,10 @@ def main():
     parser.add_argument('--time-signature', choices=['4/4', '3/4', '6/8', '2/4', '5/4'],
                        help='Time signature (default: 4/4)')
     
+    # Track 3: Magenta-Only Classification
+    parser.add_argument('--use-magenta-only', action='store_true',
+                       help='Track 3: Use only Magenta service for drum classification (simplified approach)')
+    
     # Parse arguments, but handle backwards compatibility
     if len(sys.argv) < 2:
         print("Usage: python main.py <input_audio_file> [options]")
@@ -171,6 +175,7 @@ def main():
         print("Example: python main.py song.mp3 --batch")
         print("Example: python main.py song.mp3 --title 'My Song' --artist 'My Band' --genre 'Metal'")
         print("Example: python main.py song.mp3 --use-original-bgm --time-signature 3/4")
+        print("Example: python main.py song.mp3 --use-magenta-only --title 'MagentaOnly_Track3'")
         sys.exit(1)
     
     # Handle old-style command line (backwards compatibility)
@@ -221,7 +226,8 @@ def main():
             metadata = collect_metadata(input_filename, args)
         
         # Create chart converter instance with metadata
-        chart = AudioToChart(input_audio, metadata)
+        use_magenta_only = args.use_magenta_only if args else False
+        chart = AudioToChart(input_audio, metadata, use_magenta_only=use_magenta_only)
         
         # Extract beats from audio
         logger.info("Extracting beats and creating chart...")

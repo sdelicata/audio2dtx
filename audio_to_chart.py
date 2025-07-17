@@ -837,9 +837,10 @@ class HybridDrumClassifier:
 
 
 class AudioToChart:
-    def __init__(self, input_audio_path, metadata=None):
+    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False):
         self.input_audio_path = input_audio_path
         self.original_filename = os.path.basename(input_audio_path)
+        self.use_magenta_only = use_magenta_only  # Track 3 parameter
         
         # Initialize metadata with defaults or provided values
         if metadata is None:
@@ -865,6 +866,10 @@ class AudioToChart:
         self.onset_predictions = None
         self.onset_results = None
         self.hybrid_classifier = HybridDrumClassifier()
+        
+        # Log the processing mode
+        if self.use_magenta_only:
+            print("🔮 Track 3: Using MAGENTA-ONLY classification (simplified approach)")
         
     def setup_channel_mappings(self):
         """Setup drum channel mappings for DTXMania format"""
@@ -1420,6 +1425,147 @@ class AudioToChart:
         print(f"Classified onsets: {[len(class_onsets) for class_onsets in classified_onsets]}")
         return classified_onsets
     
+    def magenta_only_classification(self, fused_onsets):
+        """Track 3: Magenta-only classification (simplified approach)"""
+        print("🔮 Track 3: Magenta-only onset classification...")
+        
+        # Initialize Magenta classifier
+        self.hybrid_classifier.initialize()
+        
+        # Check if Magenta service is available
+        if not self.hybrid_classifier.magenta_classifier.service_available:
+            print("❌ Magenta service not available, using simplified fallback")
+            return self._simple_frequency_classification(fused_onsets)
+        
+        classified_onsets = [[] for _ in range(self.num_class)]
+        
+        for onset_time in fused_onsets:
+            try:
+                # Extract audio window around onset
+                drum_mono = librosa.to_mono(np.transpose(self.drum_audio))
+                start_sample = int((onset_time - 0.1) * self.sample_rate)
+                end_sample = int((onset_time + 0.1) * self.sample_rate)
+                
+                # Ensure bounds
+                start_sample = max(0, start_sample)
+                end_sample = min(len(drum_mono), end_sample)
+                
+                if end_sample <= start_sample:
+                    classified_onsets[2].append(onset_time)  # Default to kick
+                    continue
+                
+                window = drum_mono[start_sample:end_sample]
+                
+                if len(window) < 100:
+                    classified_onsets[2].append(onset_time)  # Default to kick
+                    continue
+                
+                # Use Magenta service for classification
+                result = self.hybrid_classifier.magenta_classifier.classify_onset(window, onset_time)
+                
+                if result is not None and result.get('confidence', 0) > 0.6:
+                    # Map Magenta result to our class system
+                    instrument = result.get('instrument', 'kick')
+                    class_id = self._map_instrument_to_class(instrument)
+                    classified_onsets[class_id].append(onset_time)
+                else:
+                    # Low confidence, use simple frequency analysis
+                    class_id = self._simple_frequency_classify(window)
+                    classified_onsets[class_id].append(onset_time)
+                
+            except Exception as e:
+                print(f"⚠️  Error classifying onset at {onset_time}: {e}")
+                # Default to kick on error
+                classified_onsets[2].append(onset_time)
+        
+        print(f"🔮 Magenta-only classified onsets: {[len(class_onsets) for class_onsets in classified_onsets]}")
+        return classified_onsets
+    
+    def _map_instrument_to_class(self, instrument):
+        """Map instrument name to class ID"""
+        instrument_map = {
+            'kick': 2, 'bass': 2, 'bass_drum': 2,
+            'snare': 1, 'snare_drum': 1,
+            'hi-hat': 0, 'hihat': 0, 'hi_hat': 0,
+            'hi-hat-open': 7, 'hihat_open': 7, 'open_hihat': 7,
+            'tom': 3, 'tom_high': 3, 'high_tom': 3,
+            'tom_low': 4, 'low_tom': 4,
+            'tom_floor': 6, 'floor_tom': 6,
+            'ride': 5, 'ride_cymbal': 5,
+            'ride_bell': 8, 'bell': 8,
+            'crash': 9, 'crash_cymbal': 9
+        }
+        return instrument_map.get(instrument.lower(), 2)  # Default to kick
+    
+    def _simple_frequency_classify(self, window):
+        """Simple frequency-based classification"""
+        try:
+            # FFT analysis
+            fft = np.fft.rfft(window)
+            freqs = np.fft.rfftfreq(len(window), 1/self.sample_rate)
+            magnitude = np.abs(fft)
+            
+            # Find peak frequency
+            peak_idx = np.argmax(magnitude)
+            peak_freq = freqs[peak_idx]
+            
+            # Simple classification based on peak frequency
+            if peak_freq < 100:
+                return 2  # kick
+            elif peak_freq < 300:
+                return 1  # snare
+            elif peak_freq < 800:
+                return 3  # tom-high
+            elif peak_freq < 1500:
+                return 4  # tom-low
+            elif peak_freq < 3000:
+                return 5  # ride
+            elif peak_freq < 6000:
+                return 0  # hi-hat-close
+            elif peak_freq < 12000:
+                return 7  # hi-hat-open
+            else:
+                return 9  # crash
+        except:
+            return 2  # Default to kick
+    
+    def _simple_frequency_classification(self, fused_onsets):
+        """Fallback classification when Magenta is not available"""
+        print("Using simple frequency classification as fallback")
+        
+        classified_onsets = [[] for _ in range(self.num_class)]
+        
+        for onset_time in fused_onsets:
+            try:
+                # Extract audio window
+                drum_mono = librosa.to_mono(np.transpose(self.drum_audio))
+                start_sample = int((onset_time - 0.05) * self.sample_rate)
+                end_sample = int((onset_time + 0.05) * self.sample_rate)
+                
+                # Ensure bounds
+                start_sample = max(0, start_sample)
+                end_sample = min(len(drum_mono), end_sample)
+                
+                if end_sample <= start_sample:
+                    classified_onsets[2].append(onset_time)  # Default to kick
+                    continue
+                
+                window = drum_mono[start_sample:end_sample]
+                
+                if len(window) < 100:
+                    classified_onsets[2].append(onset_time)  # Default to kick
+                    continue
+                
+                # Simple frequency classification
+                class_id = self._simple_frequency_classify(window)
+                classified_onsets[class_id].append(onset_time)
+                
+            except Exception as e:
+                print(f"⚠️  Error in fallback classification: {e}")
+                classified_onsets[2].append(onset_time)  # Default to kick
+        
+        return classified_onsets
+    
     def hybrid_onset_classification(self, fused_onsets):
         """Ultra-improved instrument classification using hybrid approach"""
         print("Ultra-improved hybrid onset classification...")
@@ -1617,7 +1763,13 @@ class AudioToChart:
         
         # Step 3: Ultra-improved hybrid onset detection and classification
         fused_onsets = self.fuse_onset_detections()
-        classified_onsets = self.hybrid_onset_classification(fused_onsets)
+        
+        # Track 3: Use Magenta-only classification if enabled
+        if self.use_magenta_only:
+            print("🔮 Track 3: Using Magenta-only classification")
+            classified_onsets = self.magenta_only_classification(fused_onsets)
+        else:
+            classified_onsets = self.hybrid_onset_classification(fused_onsets)
         
         # Step 4: Apply beat-based timing to classified onsets
         self.apply_improved_timing(classified_onsets)
