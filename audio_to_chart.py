@@ -2132,8 +2132,211 @@ class EnsembleClassificationSystem:
         return self.ensemble_stats
 
 
+class AdvancedAudioPreprocessor:
+    """Advanced audio preprocessing and data augmentation system for Track 8"""
+    
+    def __init__(self, sr=44100, noise_reduction_strength=0.3, compression_ratio=4.0):
+        self.sr = sr
+        self.noise_reduction_strength = noise_reduction_strength
+        self.compression_ratio = compression_ratio
+        
+        # Preprocessing statistics
+        self.preprocessing_stats = {
+            'spectral_subtraction_applied': False,
+            'dynamic_compression_applied': False,
+            'adaptive_normalization_applied': False,
+            'augmentations_applied': [],
+            'original_dynamic_range': 0.0,
+            'processed_dynamic_range': 0.0
+        }
+        
+    def advanced_preprocessing_pipeline(self, audio):
+        """Apply advanced preprocessing pipeline"""
+        print("🔄 Track 8: Advanced audio preprocessing...")
+        
+        # Convert to mono if needed
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=1)
+        
+        # Store original dynamic range
+        self.preprocessing_stats['original_dynamic_range'] = np.max(audio) - np.min(audio)
+        
+        # Step 1: Spectral subtraction for noise reduction
+        audio = self._spectral_subtraction(audio)
+        
+        # Step 2: Dynamic range compression
+        audio = self._dynamic_range_compression(audio)
+        
+        # Step 3: Adaptive normalization
+        audio = self._adaptive_normalization(audio)
+        
+        # Store processed dynamic range
+        self.preprocessing_stats['processed_dynamic_range'] = np.max(audio) - np.min(audio)
+        
+        print("🔄 Advanced preprocessing completed")
+        return audio
+    
+    def _spectral_subtraction(self, audio):
+        """Apply spectral subtraction for noise reduction"""
+        print("🔄 Applying spectral subtraction for noise reduction...")
+        
+        try:
+            # Compute STFT
+            stft = librosa.stft(audio, hop_length=512, n_fft=2048)
+            magnitude = np.abs(stft)
+            phase = np.angle(stft)
+            
+            # Estimate noise spectrum from first 0.5 seconds
+            noise_frames = int(0.5 * self.sr / 512)  # First 0.5 seconds
+            noise_spectrum = np.mean(magnitude[:, :noise_frames], axis=1, keepdims=True)
+            
+            # Apply spectral subtraction
+            alpha = self.noise_reduction_strength  # Subtraction factor
+            beta = 0.1  # Spectral floor
+            
+            # Spectral subtraction formula
+            enhanced_magnitude = magnitude - alpha * noise_spectrum
+            
+            # Apply spectral floor to avoid over-subtraction
+            spectral_floor = beta * magnitude
+            enhanced_magnitude = np.maximum(enhanced_magnitude, spectral_floor)
+            
+            # Reconstruct audio
+            enhanced_stft = enhanced_magnitude * np.exp(1j * phase)
+            enhanced_audio = librosa.istft(enhanced_stft, hop_length=512)
+            
+            self.preprocessing_stats['spectral_subtraction_applied'] = True
+            print(f"🔄 Spectral subtraction applied (α={alpha}, β={beta})")
+            
+            return enhanced_audio
+            
+        except Exception as e:
+            print(f"🔄 Spectral subtraction failed, using original audio: {e}")
+            return audio
+    
+    def _dynamic_range_compression(self, audio):
+        """Apply dynamic range compression"""
+        print("🔄 Applying dynamic range compression...")
+        
+        try:
+            # Calculate RMS energy in overlapping windows
+            window_size = int(0.05 * self.sr)  # 50ms windows
+            hop_size = int(0.025 * self.sr)    # 25ms hop
+            
+            compressed_audio = np.copy(audio)
+            
+            for i in range(0, len(audio) - window_size, hop_size):
+                window = audio[i:i + window_size]
+                rms = np.sqrt(np.mean(window**2))
+                
+                if rms > 0:
+                    # Compression formula: output = input^(1/ratio) for levels above threshold
+                    threshold = 0.1  # Compression threshold
+                    
+                    if rms > threshold:
+                        # Apply compression
+                        compression_factor = 1.0 / self.compression_ratio
+                        gain = (rms / threshold) ** (compression_factor - 1)
+                        compressed_audio[i:i + window_size] = window * gain
+            
+            self.preprocessing_stats['dynamic_compression_applied'] = True
+            print(f"🔄 Dynamic compression applied (ratio={self.compression_ratio}:1)")
+            
+            return compressed_audio
+            
+        except Exception as e:
+            print(f"🔄 Dynamic compression failed, using original audio: {e}")
+            return audio
+    
+    def _adaptive_normalization(self, audio):
+        """Apply adaptive normalization based on audio characteristics"""
+        print("🔄 Applying adaptive normalization...")
+        
+        try:
+            # Analyze audio characteristics
+            rms = np.sqrt(np.mean(audio**2))
+            peak = np.max(np.abs(audio))
+            crest_factor = peak / rms if rms > 0 else 1.0
+            
+            # Adaptive normalization based on audio characteristics
+            if crest_factor > 10:  # High dynamic range audio
+                # Gentle normalization to preserve dynamics
+                target_peak = 0.8
+                gain = target_peak / peak if peak > 0 else 1.0
+            elif crest_factor < 3:  # Compressed audio
+                # RMS-based normalization
+                target_rms = 0.3
+                gain = target_rms / rms if rms > 0 else 1.0
+            else:  # Normal audio
+                # Standard peak normalization
+                target_peak = 0.9
+                gain = target_peak / peak if peak > 0 else 1.0
+            
+            # Apply gain with soft limiting
+            normalized_audio = audio * gain
+            normalized_audio = np.tanh(normalized_audio)  # Soft limiting
+            
+            self.preprocessing_stats['adaptive_normalization_applied'] = True
+            print(f"🔄 Adaptive normalization applied (crest={crest_factor:.2f}, gain={gain:.3f})")
+            
+            return normalized_audio
+            
+        except Exception as e:
+            print(f"🔄 Adaptive normalization failed, using original audio: {e}")
+            return audio
+    
+    def apply_data_augmentation(self, audio, augmentation_type='mixed'):
+        """Apply data augmentation for training robustness"""
+        print(f"🔄 Applying data augmentation: {augmentation_type}")
+        
+        augmented_variants = []
+        
+        if augmentation_type in ['mixed', 'pitch']:
+            # Pitch shifting
+            for shift in [-2, -1, 1, 2]:  # Semitones
+                try:
+                    shifted = librosa.effects.pitch_shift(audio, sr=self.sr, n_steps=shift)
+                    augmented_variants.append(shifted)
+                    self.preprocessing_stats['augmentations_applied'].append(f'pitch_shift_{shift}')
+                except:
+                    pass
+        
+        if augmentation_type in ['mixed', 'time']:
+            # Time stretching
+            for rate in [0.8, 0.9, 1.1, 1.2]:
+                try:
+                    stretched = librosa.effects.time_stretch(audio, rate=rate)
+                    # Ensure same length as original
+                    if len(stretched) > len(audio):
+                        stretched = stretched[:len(audio)]
+                    elif len(stretched) < len(audio):
+                        stretched = np.pad(stretched, (0, len(audio) - len(stretched)))
+                    augmented_variants.append(stretched)
+                    self.preprocessing_stats['augmentations_applied'].append(f'time_stretch_{rate}')
+                except:
+                    pass
+        
+        if augmentation_type in ['mixed', 'noise']:
+            # Noise addition
+            for noise_level in [0.001, 0.005, 0.01]:
+                try:
+                    noise = np.random.normal(0, noise_level, len(audio))
+                    noisy = audio + noise
+                    augmented_variants.append(noisy)
+                    self.preprocessing_stats['augmentations_applied'].append(f'noise_{noise_level}')
+                except:
+                    pass
+        
+        print(f"🔄 Generated {len(augmented_variants)} augmented variants")
+        return augmented_variants
+    
+    def get_preprocessing_statistics(self):
+        """Get preprocessing and augmentation statistics"""
+        return self.preprocessing_stats
+
+
 class AudioToChart:
-    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False, use_advanced_features=False, use_multi_scale=False, use_few_shot=False, use_ensemble=False):
+    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False, use_advanced_features=False, use_multi_scale=False, use_few_shot=False, use_ensemble=False, use_augmentation=False):
         self.input_audio_path = input_audio_path
         self.original_filename = os.path.basename(input_audio_path)
         self.use_magenta_only = use_magenta_only  # Track 3 parameter
@@ -2141,6 +2344,7 @@ class AudioToChart:
         self.use_multi_scale = use_multi_scale  # Track 5 parameter
         self.use_few_shot = use_few_shot  # Track 6 parameter
         self.use_ensemble = use_ensemble  # Track 7 parameter
+        self.use_augmentation = use_augmentation  # Track 8 parameter
         
         # Initialize metadata with defaults or provided values
         if metadata is None:
@@ -3092,6 +3296,137 @@ class AudioToChart:
         
         return classified_onsets
     
+    def augmentation_classification(self, fused_onsets):
+        """Track 8: Data augmentation and advanced preprocessing classification"""
+        print("🔄 Track 8: Advanced preprocessing and augmentation...")
+        
+        # Initialize advanced preprocessor
+        preprocessor = AdvancedAudioPreprocessor(sr=self.sample_rate)
+        
+        # Apply advanced preprocessing to drum audio
+        processed_audio = preprocessor.advanced_preprocessing_pipeline(self.drum_audio)
+        
+        # Generate augmented variants for robust classification
+        augmented_variants = preprocessor.apply_data_augmentation(processed_audio, 'mixed')
+        
+        # Classify using the processed audio and ensemble voting across augmented variants
+        classified_onsets = self._ensemble_augmented_classification(
+            processed_audio, augmented_variants, fused_onsets, preprocessor
+        )
+        
+        # Get preprocessing statistics
+        stats = preprocessor.get_preprocessing_statistics()
+        
+        # Log results
+        total_classified = sum(len(class_onsets) for class_onsets in classified_onsets)
+        print(f"🔄 Augmentation classified {total_classified} onsets:")
+        instrument_names = ['Hi-hat Close', 'Snare', 'Bass Drum', 'High Tom', 'Low Tom', 'Ride', 'Floor Tom', 'Hi-hat Open', 'Ride Bell', 'Crash']
+        for i, count in enumerate([len(class_onsets) for class_onsets in classified_onsets]):
+            if count > 0:
+                print(f"  {instrument_names[i]}: {count} onsets")
+        
+        # Print preprocessing statistics
+        print("🔄 Preprocessing and augmentation statistics:")
+        print(f"  Spectral subtraction: {'✓' if stats['spectral_subtraction_applied'] else '✗'}")
+        print(f"  Dynamic compression: {'✓' if stats['dynamic_compression_applied'] else '✗'}")
+        print(f"  Adaptive normalization: {'✓' if stats['adaptive_normalization_applied'] else '✗'}")
+        print(f"  Dynamic range: {stats['original_dynamic_range']:.3f} → {stats['processed_dynamic_range']:.3f}")
+        print(f"  Augmentations applied: {len(stats['augmentations_applied'])} variants")
+        
+        print("🔄 Three-stage pipeline:")
+        print("  Stage 1: Advanced preprocessing (noise reduction, compression, normalization)")
+        print("  Stage 2: Data augmentation (pitch, time, noise variants)")
+        print("  Stage 3: Ensemble classification across augmented variants")
+        
+        return classified_onsets
+    
+    def _ensemble_augmented_classification(self, processed_audio, augmented_variants, onset_times, preprocessor):
+        """Ensemble classification across augmented variants"""
+        print("🔄 Performing ensemble classification across augmented variants...")
+        
+        # Initialize result arrays for 10 instrument classes
+        classified_onsets = [[] for _ in range(10)]
+        
+        # For each onset, classify using processed audio and vote across augmented variants
+        for onset_time in onset_times:
+            start_idx = int(onset_time * self.sample_rate)
+            end_idx = start_idx + int(0.1 * self.sample_rate)  # 100ms window
+            
+            if end_idx < len(processed_audio):
+                # Extract window from processed audio
+                main_window = processed_audio[start_idx:end_idx]
+                
+                # Classify main window using hybrid approach
+                main_classification = self._classify_augmented_window(main_window)
+                
+                # Collect votes from augmented variants
+                variant_votes = []
+                for variant in augmented_variants[:5]:  # Use first 5 variants to avoid overload
+                    if end_idx < len(variant):
+                        variant_window = variant[start_idx:end_idx]
+                        variant_classification = self._classify_augmented_window(variant_window)
+                        variant_votes.append(variant_classification)
+                
+                # Ensemble voting: weight main classification higher
+                final_class = self._vote_across_variants(main_classification, variant_votes)
+                classified_onsets[final_class].append(onset_time)
+        
+        return classified_onsets
+    
+    def _classify_augmented_window(self, window):
+        """Classify a single audio window using robust features"""
+        # Extract robust features
+        rms = np.sqrt(np.mean(window**2))
+        spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=self.sample_rate))
+        spectral_rolloff = np.mean(librosa.feature.spectral_rolloff(y=window, sr=self.sample_rate))
+        zcr = np.mean(librosa.feature.zero_crossing_rate(window))
+        
+        # Enhanced frequency analysis
+        fft = np.abs(np.fft.fft(window))
+        low_freq_energy = np.sum(fft[:len(fft)//8])     # Bass frequencies
+        mid_freq_energy = np.sum(fft[len(fft)//8:len(fft)//4])  # Mid frequencies
+        high_freq_energy = np.sum(fft[len(fft)//2:])    # High frequencies
+        
+        # Rule-based classification with augmentation robustness
+        if spectral_centroid > 4000 and high_freq_energy > mid_freq_energy:
+            if spectral_rolloff > 8000:
+                return 9  # Crash
+            elif zcr > 0.1:
+                return 5  # Ride
+            else:
+                return 0  # Hi-hat close
+        elif rms > 0.15 and low_freq_energy > mid_freq_energy:
+            return 2  # Bass Drum
+        elif rms > 0.08 and 1500 < spectral_centroid < 4000:
+            return 1  # Snare
+        elif 800 < spectral_centroid < 2500:
+            if spectral_centroid > 1800:
+                return 3  # High tom
+            elif spectral_centroid > 1200:
+                return 4  # Low tom
+            else:
+                return 6  # Floor tom
+        else:
+            return 0  # Hi-hat close (default)
+    
+    def _vote_across_variants(self, main_classification, variant_votes):
+        """Vote across augmented variants with main classification weighted higher"""
+        if not variant_votes:
+            return main_classification
+        
+        # Count votes
+        vote_counts = {}
+        
+        # Main classification gets 3 votes
+        vote_counts[main_classification] = vote_counts.get(main_classification, 0) + 3
+        
+        # Each variant gets 1 vote
+        for vote in variant_votes:
+            vote_counts[vote] = vote_counts.get(vote, 0) + 1
+        
+        # Return class with most votes
+        return max(vote_counts, key=vote_counts.get)
+    
     def hybrid_onset_classification(self, fused_onsets):
         """Ultra-improved instrument classification using hybrid approach"""
         print("Ultra-improved hybrid onset classification...")
@@ -3291,7 +3626,10 @@ class AudioToChart:
         fused_onsets = self.fuse_onset_detections()
         
         # Track selection for different classification approaches
-        if self.use_ensemble:
+        if self.use_augmentation:
+            print("🔄 Track 8: Using advanced preprocessing and augmentation")
+            classified_onsets = self.augmentation_classification(fused_onsets)
+        elif self.use_ensemble:
             print("🎯 Track 7: Using ensemble of specialized models")
             classified_onsets = self.ensemble_classification(fused_onsets)
         elif self.use_few_shot:
