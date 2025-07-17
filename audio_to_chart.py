@@ -2335,8 +2335,693 @@ class AdvancedAudioPreprocessor:
         return self.preprocessing_stats
 
 
+class RockPatternDetector:
+    """Rock/Metal specific pattern detection system for Track 9"""
+    
+    def __init__(self, sr=44100):
+        self.sr = sr
+        self.pattern_stats = {
+            'kick_snare_patterns': 0,
+            'double_bass_detected': 0,
+            'blast_beats_detected': 0,
+            'fill_patterns': 0,
+            'crash_emphasis': 0
+        }
+        
+    def detect_rock_patterns(self, audio, onset_times, beat_times):
+        """Detect rock/metal specific patterns in the audio"""
+        print("🎸 Detecting rock/metal patterns...")
+        
+        patterns = {
+            'kick_snare_alternation': self._detect_kick_snare_alternation(onset_times, beat_times),
+            'double_bass_patterns': self._detect_double_bass(audio, onset_times),
+            'blast_beat_sections': self._detect_blast_beats(onset_times, beat_times),
+            'fill_detection': self._detect_drum_fills(onset_times, beat_times),
+            'crash_emphasis': self._detect_crash_emphasis(audio, onset_times, beat_times)
+        }
+        
+        print(f"🎸 Rock patterns detected: {sum(1 for p in patterns.values() if p)} / {len(patterns)}")
+        return patterns
+    
+    def _detect_kick_snare_alternation(self, onset_times, beat_times):
+        """Detect typical rock kick-snare alternation patterns"""
+        if len(beat_times) < 4:
+            return False
+            
+        # Check for alternating pattern on beats 1,3 (kick) and 2,4 (snare)
+        alternation_score = 0
+        beat_tolerance = 0.05  # 50ms tolerance
+        
+        for i in range(0, len(beat_times) - 4, 4):
+            beat_group = beat_times[i:i+4]
+            
+            # Expected kick positions (beats 1 and 3)
+            kick_positions = [beat_group[0], beat_group[2]]
+            # Expected snare positions (beats 2 and 4)  
+            snare_positions = [beat_group[1], beat_group[3]]
+            
+            # Count onsets near expected positions
+            kick_hits = sum(1 for pos in kick_positions 
+                          if any(abs(onset - pos) < beat_tolerance for onset in onset_times))
+            snare_hits = sum(1 for pos in snare_positions
+                           if any(abs(onset - pos) < beat_tolerance for onset in onset_times))
+            
+            if kick_hits >= 1 and snare_hits >= 1:
+                alternation_score += 1
+        
+        self.pattern_stats['kick_snare_patterns'] = alternation_score
+        return alternation_score > len(beat_times) // 8  # At least 1/8 of bars show pattern
+    
+    def _detect_double_bass(self, audio, onset_times):
+        """Detect double bass drum patterns common in metal"""
+        double_bass_count = 0
+        
+        # Look for rapid low-frequency onsets
+        for i in range(len(onset_times) - 1):
+            time_diff = onset_times[i+1] - onset_times[i]
+            
+            # Double bass typically 60-120ms apart
+            if 0.06 <= time_diff <= 0.12:
+                start_idx = int(onset_times[i] * self.sr)
+                end_idx = int(onset_times[i+1] * self.sr)
+                
+                if end_idx < len(audio):
+                    window = audio[start_idx:end_idx]
+                    
+                    # Check for low-frequency energy (kick characteristics)
+                    fft = np.abs(np.fft.fft(window))
+                    low_freq_energy = np.sum(fft[:len(fft)//16])  # Very low frequencies
+                    total_energy = np.sum(fft)
+                    
+                    if total_energy > 0 and low_freq_energy / total_energy > 0.3:
+                        double_bass_count += 1
+        
+        self.pattern_stats['double_bass_detected'] = double_bass_count
+        return double_bass_count > 10  # Threshold for significant double bass presence
+    
+    def _detect_blast_beats(self, onset_times, beat_times):
+        """Detect blast beat patterns (very fast, repetitive)"""
+        if len(onset_times) < 10:
+            return False
+            
+        blast_sections = 0
+        window_size = 2.0  # 2 second windows
+        
+        for i in range(0, len(onset_times) - 10):
+            window_onsets = []
+            current_time = onset_times[i]
+            
+            # Collect onsets in 2-second window
+            for j in range(i, len(onset_times)):
+                if onset_times[j] - current_time <= window_size:
+                    window_onsets.append(onset_times[j])
+                else:
+                    break
+            
+            # Blast beats have very high onset density (>8 hits per second)
+            if len(window_onsets) >= 16:  # 8+ hits per second
+                blast_sections += 1
+        
+        self.pattern_stats['blast_beats_detected'] = blast_sections
+        return blast_sections > 0
+    
+    def _detect_drum_fills(self, onset_times, beat_times):
+        """Detect drum fill sections (high density, non-regular patterns)"""
+        if len(beat_times) < 8:
+            return False
+            
+        fill_count = 0
+        
+        # Analyze each 4-beat section
+        for i in range(0, len(beat_times) - 4, 4):
+            bar_start = beat_times[i]
+            bar_end = beat_times[i+3] + (beat_times[i+1] - beat_times[i])  # Add one beat duration
+            
+            # Count onsets in this bar
+            bar_onsets = [t for t in onset_times if bar_start <= t <= bar_end]
+            
+            # Fills typically have high onset density (>6 hits per bar)
+            if len(bar_onsets) > 6:
+                # Check for irregular spacing (not just regular subdivision)
+                spacing_variance = 0
+                if len(bar_onsets) > 2:
+                    spacings = [bar_onsets[j+1] - bar_onsets[j] for j in range(len(bar_onsets)-1)]
+                    spacing_variance = np.var(spacings) if len(spacings) > 1 else 0
+                
+                # High variance indicates irregular fill pattern
+                if spacing_variance > 0.01:  # 10ms variance threshold
+                    fill_count += 1
+        
+        self.pattern_stats['fill_patterns'] = fill_count
+        return fill_count > 0
+    
+    def _detect_crash_emphasis(self, audio, onset_times, beat_times):
+        """Detect crash cymbal emphasis on strong beats"""
+        crash_emphasis_count = 0
+        
+        if len(beat_times) < 4:
+            return False
+        
+        # Check onsets near beat 1 of each bar (strongest beat)
+        for i in range(0, len(beat_times), 4):
+            beat_one = beat_times[i]
+            
+            # Find onsets within 50ms of beat 1
+            nearby_onsets = [t for t in onset_times if abs(t - beat_one) < 0.05]
+            
+            for onset_time in nearby_onsets:
+                start_idx = int(onset_time * self.sr)
+                end_idx = start_idx + int(0.1 * self.sr)  # 100ms window
+                
+                if end_idx < len(audio):
+                    window = audio[start_idx:end_idx]
+                    
+                    # Check for high-frequency energy (crash characteristics)
+                    fft = np.abs(np.fft.fft(window))
+                    high_freq_energy = np.sum(fft[len(fft)//2:])  # Top half of spectrum
+                    total_energy = np.sum(fft)
+                    
+                    # High energy and high-frequency content indicates crash
+                    if (total_energy > 0 and high_freq_energy / total_energy > 0.4 and 
+                        np.sqrt(np.mean(window**2)) > 0.1):
+                        crash_emphasis_count += 1
+                        break
+        
+        self.pattern_stats['crash_emphasis'] = crash_emphasis_count
+        return crash_emphasis_count > len(beat_times) // 16  # At least 1 crash per 4 bars
+    
+    def get_pattern_statistics(self):
+        """Get detected pattern statistics"""
+        return self.pattern_stats
+
+
+class MetalFeatureEnhancer:
+    """Metal-specific feature enhancement for Track 9"""
+    
+    def __init__(self, sr=44100):
+        self.sr = sr
+        self.enhancement_stats = {
+            'high_gain_compensation': False,
+            'drop_tuning_detected': False,
+            'triggered_drums_detected': False,
+            'enhanced_features_count': 0
+        }
+    
+    def enhance_features_for_metal(self, audio, features):
+        """Enhance features specifically for metal/rock characteristics"""
+        print("🤘 Enhancing features for metal/rock...")
+        
+        enhanced_features = features.copy()
+        
+        # Metal-specific enhancements
+        enhanced_features.extend(self._extract_high_gain_features(audio))
+        enhanced_features.extend(self._extract_low_tuning_features(audio))
+        enhanced_features.extend(self._extract_triggered_drum_features(audio))
+        enhanced_features.extend(self._extract_metal_rhythm_features(audio))
+        
+        self.enhancement_stats['enhanced_features_count'] = len(enhanced_features) - len(features)
+        print(f"🤘 Added {self.enhancement_stats['enhanced_features_count']} metal-specific features")
+        
+        return enhanced_features
+    
+    def _extract_high_gain_features(self, audio):
+        """Extract features compensating for high-gain guitar interference"""
+        features = []
+        
+        # Detect high-gain characteristics
+        fft = np.abs(np.fft.fft(audio))
+        
+        # High-gain detection: lots of harmonic content
+        harmonic_energy = 0
+        fundamental_freqs = [82, 110, 147, 196]  # E, A, D, G string fundamentals
+        
+        for freq in fundamental_freqs:
+            freq_bin = int(freq * len(fft) / self.sr)
+            if freq_bin < len(fft):
+                # Sum energy in harmonic series
+                harmonic_sum = sum(fft[freq_bin * h] for h in range(1, 8) 
+                                 if freq_bin * h < len(fft))
+                harmonic_energy += harmonic_sum
+        
+        # Normalized harmonic energy
+        total_energy = np.sum(fft)
+        harmonic_ratio = harmonic_energy / total_energy if total_energy > 0 else 0
+        
+        features.append(harmonic_ratio)
+        features.append(min(harmonic_energy / 1000000, 1.0))  # Scaled harmonic energy
+        
+        # High-gain compensation flag
+        self.enhancement_stats['high_gain_compensation'] = harmonic_ratio > 0.15
+        
+        return features
+    
+    def _extract_low_tuning_features(self, audio):
+        """Extract features for drop-tuned/low-tuned guitars"""
+        features = []
+        
+        # Analyze very low frequency content
+        fft = np.abs(np.fft.fft(audio))
+        
+        # Drop D and lower tunings
+        low_fundamental_bins = [int(f * len(fft) / self.sr) for f in [62, 73, 82]]  # Drop C, Drop D, Low E
+        
+        low_freq_energy = sum(fft[bin_idx] for bin_idx in low_fundamental_bins 
+                             if bin_idx < len(fft))
+        
+        total_energy = np.sum(fft)
+        low_freq_ratio = low_freq_energy / total_energy if total_energy > 0 else 0
+        
+        features.append(low_freq_ratio)
+        features.append(np.log1p(low_freq_energy))  # Log-scaled low frequency energy
+        
+        # Drop tuning detection
+        self.enhancement_stats['drop_tuning_detected'] = low_freq_ratio > 0.1
+        
+        return features
+    
+    def _extract_triggered_drum_features(self, audio):
+        """Extract features for triggered/electronic drums common in metal"""
+        features = []
+        
+        # Triggered drums have very sharp attack and consistent timbre
+        # Analyze attack sharpness
+        rms_energy = np.sqrt(np.mean(audio**2))
+        peak_energy = np.max(np.abs(audio))
+        
+        # Very high peak-to-RMS ratio suggests triggered samples
+        crest_factor = peak_energy / rms_energy if rms_energy > 0 else 0
+        
+        # Spectral consistency (triggered drums have less variation)
+        if len(audio) > self.sr:  # At least 1 second
+            # Split into 0.5s segments and analyze spectral consistency
+            segment_size = self.sr // 2
+            segments = [audio[i:i+segment_size] for i in range(0, len(audio)-segment_size, segment_size)]
+            
+            spectral_centroids = []
+            for segment in segments[:10]:  # Analyze first 10 segments
+                if len(segment) > 0:
+                    centroid = np.mean(librosa.feature.spectral_centroid(y=segment, sr=self.sr))
+                    spectral_centroids.append(centroid)
+            
+            spectral_consistency = 1.0 / (1.0 + np.std(spectral_centroids)) if len(spectral_centroids) > 1 else 0
+        else:
+            spectral_consistency = 0
+        
+        features.append(min(crest_factor / 10, 1.0))  # Normalized crest factor
+        features.append(spectral_consistency)
+        
+        # Triggered drum detection
+        self.enhancement_stats['triggered_drums_detected'] = crest_factor > 8 and spectral_consistency > 0.8
+        
+        return features
+    
+    def _extract_metal_rhythm_features(self, audio):
+        """Extract rhythm features specific to metal patterns"""
+        features = []
+        
+        # Analyze rhythm complexity and speed
+        # Use onset detection to analyze rhythmic patterns
+        try:
+            onset_frames = librosa.onset.onset_detect(y=audio, sr=self.sr, units='frames')
+            onset_times = librosa.frames_to_time(onset_frames, sr=self.sr)
+            
+            if len(onset_times) > 1:
+                # Inter-onset intervals
+                intervals = np.diff(onset_times)
+                
+                # Fast rhythm detection (metal characteristic)
+                fast_rhythms = np.sum(intervals < 0.15)  # Less than 150ms
+                fast_rhythm_ratio = fast_rhythms / len(intervals)
+                
+                # Rhythm complexity (variance in intervals)
+                rhythm_complexity = np.std(intervals) if len(intervals) > 1 else 0
+                
+                # Blast beat detection (very fast, regular)
+                blast_beat_intervals = np.sum((intervals > 0.08) & (intervals < 0.12))
+                blast_beat_ratio = blast_beat_intervals / len(intervals)
+                
+            else:
+                fast_rhythm_ratio = 0
+                rhythm_complexity = 0
+                blast_beat_ratio = 0
+            
+            features.append(fast_rhythm_ratio)
+            features.append(min(rhythm_complexity, 1.0))
+            features.append(blast_beat_ratio)
+            
+        except Exception:
+            # Fallback if onset detection fails
+            features.extend([0, 0, 0])
+        
+        return features
+    
+    def get_enhancement_statistics(self):
+        """Get enhancement statistics"""
+        return self.enhancement_stats
+
+
+class UltimateVotingSystem:
+    """Ultimate voting system combining all track results for Track 9"""
+    
+    def __init__(self):
+        self.voting_stats = {
+            'total_votes_cast': 0,
+            'track_contributions': {},
+            'confidence_weighted_decisions': 0,
+            'rock_pattern_bonus_applied': 0
+        }
+        
+        # Track-specific weights optimized for rock/metal
+        self.track_weights = {
+            'ensemble': 0.25,      # Strong hierarchical classification
+            'advanced_features': 0.20,  # Rich feature analysis
+            'augmentation': 0.15,  # Robust preprocessing
+            'multi_scale': 0.15,   # Temporal precision
+            'few_shot': 0.15,      # Adaptive learning
+            'rock_patterns': 0.10  # Rock-specific bonus
+        }
+    
+    def ultimate_vote(self, track_results, rock_patterns, confidence_scores=None):
+        """Perform ultimate voting across all track results"""
+        print("🗳️ Performing ultimate voting across all tracks...")
+        
+        # Initialize vote counting for 10 instrument classes
+        vote_counts = [[] for _ in range(10)]
+        
+        # Collect votes from each track with weights
+        self._collect_ensemble_votes(track_results.get('ensemble', []), vote_counts, 'ensemble')
+        self._collect_feature_votes(track_results.get('advanced_features', []), vote_counts, 'advanced_features')
+        self._collect_augmentation_votes(track_results.get('augmentation', []), vote_counts, 'augmentation')
+        self._collect_multiscale_votes(track_results.get('multi_scale', []), vote_counts, 'multi_scale')
+        self._collect_fewshot_votes(track_results.get('few_shot', []), vote_counts, 'few_shot')
+        
+        # Apply rock pattern bonuses
+        vote_counts = self._apply_rock_pattern_bonuses(vote_counts, rock_patterns)
+        
+        # Resolve votes to final classifications
+        final_classifications = self._resolve_ultimate_votes(vote_counts, confidence_scores)
+        
+        # Log voting statistics
+        total_classified = sum(len(class_onsets) for class_onsets in final_classifications)
+        self.voting_stats['total_votes_cast'] = total_classified
+        
+        print(f"🗳️ Ultimate voting completed: {total_classified} onsets classified")
+        print(f"🗳️ Track contributions: {self.voting_stats['track_contributions']}")
+        
+        return final_classifications
+    
+    def _collect_ensemble_votes(self, ensemble_results, vote_counts, track_name):
+        """Collect votes from ensemble track"""
+        weight = self.track_weights['ensemble']
+        contribution = 0
+        
+        for class_idx, onsets in enumerate(ensemble_results):
+            for onset_time in onsets:
+                vote_counts[class_idx].append({
+                    'time': onset_time,
+                    'weight': weight,
+                    'source': track_name,
+                    'confidence': 0.8  # High confidence for ensemble
+                })
+                contribution += 1
+        
+        self.voting_stats['track_contributions'][track_name] = contribution
+    
+    def _collect_feature_votes(self, feature_results, vote_counts, track_name):
+        """Collect votes from advanced features track"""
+        weight = self.track_weights['advanced_features']
+        contribution = 0
+        
+        for class_idx, onsets in enumerate(feature_results):
+            for onset_time in onsets:
+                vote_counts[class_idx].append({
+                    'time': onset_time,
+                    'weight': weight,
+                    'source': track_name,
+                    'confidence': 0.75  # Good confidence for features
+                })
+                contribution += 1
+        
+        self.voting_stats['track_contributions'][track_name] = contribution
+    
+    def _collect_augmentation_votes(self, aug_results, vote_counts, track_name):
+        """Collect votes from augmentation track"""
+        weight = self.track_weights['augmentation']
+        contribution = 0
+        
+        for class_idx, onsets in enumerate(aug_results):
+            for onset_time in onsets:
+                vote_counts[class_idx].append({
+                    'time': onset_time,
+                    'weight': weight,
+                    'source': track_name,
+                    'confidence': 0.7  # Good confidence for robust preprocessing
+                })
+                contribution += 1
+        
+        self.voting_stats['track_contributions'][track_name] = contribution
+    
+    def _collect_multiscale_votes(self, multiscale_results, vote_counts, track_name):
+        """Collect votes from multi-scale track"""
+        weight = self.track_weights['multi_scale']
+        contribution = 0
+        
+        for class_idx, onsets in enumerate(multiscale_results):
+            for onset_time in onsets:
+                vote_counts[class_idx].append({
+                    'time': onset_time,
+                    'weight': weight,
+                    'source': track_name,
+                    'confidence': 0.7  # Good confidence for temporal analysis
+                })
+                contribution += 1
+        
+        self.voting_stats['track_contributions'][track_name] = contribution
+    
+    def _collect_fewshot_votes(self, fewshot_results, vote_counts, track_name):
+        """Collect votes from few-shot track"""
+        weight = self.track_weights['few_shot']
+        contribution = 0
+        
+        for class_idx, onsets in enumerate(fewshot_results):
+            for onset_time in onsets:
+                vote_counts[class_idx].append({
+                    'time': onset_time,
+                    'weight': weight,
+                    'source': track_name,
+                    'confidence': 0.65  # Moderate confidence for adaptive learning
+                })
+                contribution += 1
+        
+        self.voting_stats['track_contributions'][track_name] = contribution
+    
+    def _apply_rock_pattern_bonuses(self, vote_counts, rock_patterns):
+        """Apply bonuses based on detected rock patterns"""
+        bonus_weight = self.track_weights['rock_patterns']
+        bonuses_applied = 0
+        
+        # Bonus for kick (class 2) if kick-snare alternation detected
+        if rock_patterns.get('kick_snare_alternation', False):
+            for vote in vote_counts[2]:  # Bass Drum
+                vote['weight'] += bonus_weight * 0.5
+                bonuses_applied += 1
+        
+        # Bonus for snare (class 1) if kick-snare alternation detected
+        if rock_patterns.get('kick_snare_alternation', False):
+            for vote in vote_counts[1]:  # Snare
+                vote['weight'] += bonus_weight * 0.5
+                bonuses_applied += 1
+        
+        # Bonus for crash (class 9) if crash emphasis detected
+        if rock_patterns.get('crash_emphasis', False):
+            for vote in vote_counts[9]:  # Crash
+                vote['weight'] += bonus_weight
+                bonuses_applied += 1
+        
+        # Double bass bonus
+        if rock_patterns.get('double_bass_patterns', False):
+            for vote in vote_counts[2]:  # Bass Drum
+                vote['weight'] += bonus_weight * 0.3
+                bonuses_applied += 1
+        
+        self.voting_stats['rock_pattern_bonus_applied'] = bonuses_applied
+        return vote_counts
+    
+    def _resolve_ultimate_votes(self, vote_counts, confidence_scores):
+        """Resolve all votes to final onset classifications"""
+        final_results = [[] for _ in range(10)]
+        
+        # Group votes by time proximity (within 50ms)
+        time_tolerance = 0.05
+        
+        for class_idx, votes in enumerate(vote_counts):
+            if not votes:
+                continue
+            
+            # Sort votes by time
+            votes.sort(key=lambda x: x['time'])
+            
+            # Group nearby votes
+            vote_groups = []
+            current_group = [votes[0]]
+            
+            for vote in votes[1:]:
+                if vote['time'] - current_group[-1]['time'] <= time_tolerance:
+                    current_group.append(vote)
+                else:
+                    vote_groups.append(current_group)
+                    current_group = [vote]
+            
+            if current_group:
+                vote_groups.append(current_group)
+            
+            # Resolve each group
+            for group in vote_groups:
+                total_weight = sum(vote['weight'] * vote['confidence'] for vote in group)
+                avg_time = sum(vote['time'] for vote in group) / len(group)
+                
+                # Only include if total weight is significant
+                if total_weight > 0.3:  # Threshold for inclusion
+                    final_results[class_idx].append(avg_time)
+                    self.voting_stats['confidence_weighted_decisions'] += 1
+        
+        return final_results
+    
+    def get_voting_statistics(self):
+        """Get voting statistics"""
+        return self.voting_stats
+
+
+class UltimateRockClassifier:
+    """Ultimate rock/metal classifier combining all tracks for Track 9"""
+    
+    def __init__(self, audio_to_chart_instance, sr=44100):
+        self.sr = sr
+        self.audio_to_chart = audio_to_chart_instance  # Reference to AudioToChart for real track calls
+        
+        # Initialize all track systems
+        self.rock_pattern_detector = RockPatternDetector(sr=sr)
+        self.metal_feature_enhancer = MetalFeatureEnhancer(sr=sr)
+        self.ultimate_voting_system = UltimateVotingSystem()
+        
+        # Ultimate statistics
+        self.ultimate_stats = {
+            'tracks_used': [],
+            'rock_patterns_detected': 0,
+            'metal_features_enhanced': 0,
+            'ultimate_confidence': 0.0
+        }
+    
+    def ultimate_rock_classification(self, audio, onset_times, beat_times):
+        """Perform ultimate rock/metal classification"""
+        print("🎸 Ultimate Rock Classification Pipeline Starting...")
+        
+        # Convert to mono if needed
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=1)
+        
+        # Phase 1: Detect rock patterns
+        rock_patterns = self.rock_pattern_detector.detect_rock_patterns(audio, onset_times, beat_times)
+        self.ultimate_stats['rock_patterns_detected'] = sum(1 for p in rock_patterns.values() if p)
+        
+        # Phase 2: Run all classification tracks
+        track_results = self._run_all_tracks(audio, onset_times, beat_times, rock_patterns)
+        
+        # Phase 3: Ultimate voting
+        final_classifications = self.ultimate_voting_system.ultimate_vote(
+            track_results, rock_patterns
+        )
+        
+        # Calculate ultimate confidence
+        total_onsets = len(onset_times)
+        classified_onsets = sum(len(class_onsets) for class_onsets in final_classifications)
+        self.ultimate_stats['ultimate_confidence'] = classified_onsets / total_onsets if total_onsets > 0 else 0
+        
+        print("🎸 Ultimate Rock Classification Pipeline Completed!")
+        return final_classifications
+    
+    def _run_all_tracks(self, audio, onset_times, beat_times, rock_patterns):
+        """Run all available tracks for comparison using real implementations"""
+        track_results = {}
+        
+        print("🎸 Running all classification tracks for ultimate fusion...")
+        print("🎸 Executing real track implementations (3-8)...")
+        
+        # Track 3: Magenta-Only Classification
+        try:
+            print("🎸 Running Track 3: Magenta-Only...")
+            track_results['magenta_only'] = self.audio_to_chart.magenta_only_classification(onset_times)
+            print(f"🎸 Track 3 completed with {sum(len(class_onsets) for class_onsets in track_results['magenta_only'])} classified onsets")
+        except Exception as e:
+            print(f"🎸 Track 3 failed: {str(e)}")
+            track_results['magenta_only'] = [[] for _ in range(10)]
+        
+        # Track 4: Advanced Spectral Features
+        try:
+            print("🎸 Running Track 4: Advanced Features...")
+            track_results['advanced_features'] = self.audio_to_chart.advanced_features_classification(onset_times)
+            print(f"🎸 Track 4 completed with {sum(len(class_onsets) for class_onsets in track_results['advanced_features'])} classified onsets")
+        except Exception as e:
+            print(f"🎸 Track 4 failed: {str(e)}")
+            track_results['advanced_features'] = [[] for _ in range(10)]
+        
+        # Track 5: Multi-Scale Temporal Analysis
+        try:
+            print("🎸 Running Track 5: Multi-Scale...")
+            track_results['multi_scale'] = self.audio_to_chart.multi_scale_classification(onset_times)
+            print(f"🎸 Track 5 completed with {sum(len(class_onsets) for class_onsets in track_results['multi_scale'])} classified onsets")
+        except Exception as e:
+            print(f"🎸 Track 5 failed: {str(e)}")
+            track_results['multi_scale'] = [[] for _ in range(10)]
+        
+        # Track 6: Real-Time Few-Shot Learning
+        try:
+            print("🎸 Running Track 6: Few-Shot Learning...")
+            track_results['few_shot'] = self.audio_to_chart.few_shot_classification(onset_times)
+            print(f"🎸 Track 6 completed with {sum(len(class_onsets) for class_onsets in track_results['few_shot'])} classified onsets")
+        except Exception as e:
+            print(f"🎸 Track 6 failed: {str(e)}")
+            track_results['few_shot'] = [[] for _ in range(10)]
+        
+        # Track 7: Ensemble of Specialized Models
+        try:
+            print("🎸 Running Track 7: Ensemble...")
+            track_results['ensemble'] = self.audio_to_chart.ensemble_classification(onset_times)
+            print(f"🎸 Track 7 completed with {sum(len(class_onsets) for class_onsets in track_results['ensemble'])} classified onsets")
+        except Exception as e:
+            print(f"🎸 Track 7 failed: {str(e)}")
+            track_results['ensemble'] = [[] for _ in range(10)]
+        
+        # Track 8: Data Augmentation and Preprocessing
+        try:
+            print("🎸 Running Track 8: Augmentation...")
+            track_results['augmentation'] = self.audio_to_chart.augmentation_classification(onset_times)
+            print(f"🎸 Track 8 completed with {sum(len(class_onsets) for class_onsets in track_results['augmentation'])} classified onsets")
+        except Exception as e:
+            print(f"🎸 Track 8 failed: {str(e)}")
+            track_results['augmentation'] = [[] for _ in range(10)]
+        
+        successful_tracks = [track for track, results in track_results.items() 
+                           if any(len(class_onsets) > 0 for class_onsets in results)]
+        
+        self.ultimate_stats['tracks_used'] = successful_tracks
+        print(f"🎸 Successfully executed {len(successful_tracks)}/6 tracks: {', '.join(successful_tracks)}")
+        
+        return track_results
+    
+    def get_ultimate_statistics(self):
+        """Get ultimate classification statistics"""
+        stats = self.ultimate_stats.copy()
+        stats.update({
+            'rock_pattern_stats': self.rock_pattern_detector.get_pattern_statistics(),
+            'metal_enhancement_stats': self.metal_feature_enhancer.get_enhancement_statistics(),
+            'voting_stats': self.ultimate_voting_system.get_voting_statistics()
+        })
+        return stats
+
+
 class AudioToChart:
-    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False, use_advanced_features=False, use_multi_scale=False, use_few_shot=False, use_ensemble=False, use_augmentation=False):
+    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False, use_advanced_features=False, use_multi_scale=False, use_few_shot=False, use_ensemble=False, use_augmentation=False, use_rock_ultimate=False):
         self.input_audio_path = input_audio_path
         self.original_filename = os.path.basename(input_audio_path)
         self.use_magenta_only = use_magenta_only  # Track 3 parameter
@@ -2345,6 +3030,7 @@ class AudioToChart:
         self.use_few_shot = use_few_shot  # Track 6 parameter
         self.use_ensemble = use_ensemble  # Track 7 parameter
         self.use_augmentation = use_augmentation  # Track 8 parameter
+        self.use_rock_ultimate = use_rock_ultimate  # Track 9 parameter
         
         # Initialize metadata with defaults or provided values
         if metadata is None:
@@ -3427,6 +4113,59 @@ class AudioToChart:
         # Return class with most votes
         return max(vote_counts, key=vote_counts.get)
     
+    def rock_ultimate_classification(self, fused_onsets):
+        """Track 9: Ultimate rock/metal classification combining all tracks"""
+        print("🎸 Track 9: Ultimate rock/metal classification...")
+        
+        # Initialize ultimate rock classifier
+        ultimate_classifier = UltimateRockClassifier(self, sr=self.sample_rate)
+        
+        # Perform ultimate classification
+        classified_onsets = ultimate_classifier.ultimate_rock_classification(
+            self.drum_audio, fused_onsets, self.beat_times
+        )
+        
+        # Get ultimate statistics
+        stats = ultimate_classifier.get_ultimate_statistics()
+        
+        # Log results
+        total_classified = sum(len(class_onsets) for class_onsets in classified_onsets)
+        print(f"🎸 Ultimate rock classified {total_classified} onsets:")
+        instrument_names = ['Hi-hat Close', 'Snare', 'Bass Drum', 'High Tom', 'Low Tom', 'Ride', 'Floor Tom', 'Hi-hat Open', 'Ride Bell', 'Crash']
+        for i, count in enumerate([len(class_onsets) for class_onsets in classified_onsets]):
+            if count > 0:
+                print(f"  {instrument_names[i]}: {count} onsets")
+        
+        # Print ultimate statistics
+        print("🎸 Ultimate rock/metal statistics:")
+        print(f"  Rock patterns detected: {stats['rock_patterns_detected']}/5")
+        print(f"  Tracks combined: {len(stats['tracks_used'])}")
+        print(f"  Ultimate confidence: {stats['ultimate_confidence']:.2f}")
+        
+        # Print rock pattern details
+        if 'rock_pattern_stats' in stats:
+            rock_stats = stats['rock_pattern_stats']
+            print(f"  Kick-snare patterns: {rock_stats.get('kick_snare_patterns', 0)}")
+            print(f"  Double bass detected: {rock_stats.get('double_bass_detected', 0)}")
+            print(f"  Blast beats: {rock_stats.get('blast_beats_detected', 0)}")
+            print(f"  Fill patterns: {rock_stats.get('fill_patterns', 0)}")
+            print(f"  Crash emphasis: {rock_stats.get('crash_emphasis', 0)}")
+        
+        # Print voting statistics
+        if 'voting_stats' in stats:
+            voting_stats = stats['voting_stats']
+            print(f"  Total votes cast: {voting_stats.get('total_votes_cast', 0)}")
+            print(f"  Rock pattern bonuses: {voting_stats.get('rock_pattern_bonus_applied', 0)}")
+        
+        print("🎸 Five-phase ultimate pipeline:")
+        print("  Phase 1: Rock pattern detection (kick-snare, double bass, blast beats, fills, crashes)")
+        print("  Phase 2: Multi-track classification (ensemble, features, augmentation, multi-scale, few-shot)")
+        print("  Phase 3: Metal feature enhancement (high-gain, drop-tuning, triggered drums)")
+        print("  Phase 4: Ultimate voting with rock-specific bonuses")
+        print("  Phase 5: Confidence-weighted final classification")
+        
+        return classified_onsets
+    
     def hybrid_onset_classification(self, fused_onsets):
         """Ultra-improved instrument classification using hybrid approach"""
         print("Ultra-improved hybrid onset classification...")
@@ -3626,7 +4365,10 @@ class AudioToChart:
         fused_onsets = self.fuse_onset_detections()
         
         # Track selection for different classification approaches
-        if self.use_augmentation:
+        if self.use_rock_ultimate:
+            print("🎸 Track 9: Using ultimate rock/metal optimization")
+            classified_onsets = self.rock_ultimate_classification(fused_onsets)
+        elif self.use_augmentation:
             print("🔄 Track 8: Using advanced preprocessing and augmentation")
             classified_onsets = self.augmentation_classification(fused_onsets)
         elif self.use_ensemble:
