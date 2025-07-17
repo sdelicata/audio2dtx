@@ -190,6 +190,10 @@ def main():
     parser.add_argument('--use-advanced-features', action='store_true',
                        help='Track 4: Use advanced spectral features and enhanced context analysis')
     
+    # Track 5: Multi-Scale Temporal Analysis
+    parser.add_argument('--use-multi-scale', action='store_true',
+                       help='Track 5: Use multi-scale temporal analysis for onset detection and classification')
+    
     # Parse arguments, but handle backwards compatibility
     if len(sys.argv) < 2:
         print("Usage: python main.py <input_audio_file> [options]")
@@ -199,6 +203,7 @@ def main():
         print("Example: python main.py song.mp3 --use-original-bgm --time-signature 3/4")
         print("Example: python main.py song.mp3 --use-magenta-only --title 'MagentaOnly_Track3'")
         print("Example: python main.py song.mp3 --use-advanced-features --title 'AdvancedFeatures_Track4'")
+        print("Example: python main.py song.mp3 --use-multi-scale --title 'MultiScale_Track5'")
         sys.exit(1)
     
     # Handle old-style command line (backwards compatibility)
@@ -251,7 +256,8 @@ def main():
         # Create chart converter instance with metadata
         use_magenta_only = args.use_magenta_only if args else False
         use_advanced_features = args.use_advanced_features if args else False
-        chart = AudioToChart(input_audio, metadata, use_magenta_only=use_magenta_only, use_advanced_features=use_advanced_features)
+        use_multi_scale = args.use_multi_scale if args else False
+        chart = AudioToChart(input_audio, metadata, use_magenta_only=use_magenta_only, use_advanced_features=use_advanced_features, use_multi_scale=use_multi_scale)
         
         # Extract beats from audio
         logger.info("Extracting beats and creating chart...")
