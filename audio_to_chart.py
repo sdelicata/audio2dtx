@@ -864,6 +864,342 @@ class MultiScaleTemporalAnalyzer:
         pass
 
 
+class FewShotLearningSystem:
+    """Real-time few-shot learning system for Track 6"""
+    
+    def __init__(self, sr=44100, confidence_threshold=0.6, adaptation_rate=0.1):
+        self.sr = sr
+        self.confidence_threshold = confidence_threshold
+        self.adaptation_rate = adaptation_rate
+        
+        # Instrument-specific adaptation parameters
+        self.instrument_profiles = {}
+        self.adaptation_history = []
+        self.feature_means = {}
+        self.feature_stds = {}
+        
+        # Feature extractors
+        self.feature_extractor = AdvancedFeatureExtractor(sr=sr)
+        
+        # Confidence tracking
+        self.confidence_history = []
+        self.prediction_history = []
+        
+        # Instrument-specific thresholds learned during processing
+        self.adaptive_thresholds = {
+            'spectral_centroid': {},
+            'spectral_rolloff': {},
+            'mfcc_features': {},
+            'temporal_features': {}
+        }
+        
+        # Song-specific characteristics
+        self.song_tempo = None
+        self.song_key = None
+        self.instrument_signatures = {}
+        
+    def initialize_song_profile(self, audio, beat_times, tempo):
+        """Initialize song-specific characteristics"""
+        print("🚀 Initializing song-specific profile for few-shot learning...")
+        
+        self.song_tempo = tempo
+        
+        # Analyze overall song characteristics
+        self._analyze_global_characteristics(audio)
+        
+        # Initialize instrument profiles
+        self._initialize_instrument_profiles()
+        
+        print(f"🎵 Song profile initialized: Tempo={tempo:.1f} BPM")
+        
+    def _analyze_global_characteristics(self, audio):
+        """Analyze global song characteristics"""
+        try:
+            # Convert to mono if stereo
+            if audio.ndim > 1:
+                audio = np.mean(audio, axis=1)
+            
+            # Extract global spectral characteristics
+            stft = librosa.stft(audio, hop_length=512, n_fft=2048)
+            magnitude = np.abs(stft)
+            
+            # Global spectral centroid
+            global_centroid = np.mean(librosa.feature.spectral_centroid(y=audio, sr=self.sr))
+            
+            # Global RMS energy
+            global_rms = np.mean(librosa.feature.rms(y=audio))
+            
+            # Store global characteristics
+            self.song_characteristics = {
+                'global_centroid': global_centroid,
+                'global_rms': global_rms,
+                'global_tempo': self.song_tempo
+            }
+            
+        except Exception as e:
+            print(f"Error in global analysis: {e}")
+            self.song_characteristics = {
+                'global_centroid': 2000,
+                'global_rms': 0.1,
+                'global_tempo': 120
+            }
+    
+    def _initialize_instrument_profiles(self):
+        """Initialize instrument-specific profiles"""
+        for instrument_id in range(10):
+            self.instrument_profiles[instrument_id] = {
+                'feature_means': np.zeros(47),
+                'feature_stds': np.ones(47),
+                'confidence_scores': [],
+                'adaptation_count': 0,
+                'characteristic_features': {}
+            }
+    
+    def learn_from_confident_prediction(self, features, prediction, confidence):
+        """Learn from high-confidence predictions"""
+        if confidence < self.confidence_threshold:
+            return False
+            
+        try:
+            # Update instrument profile
+            instrument_profile = self.instrument_profiles[prediction]
+            
+            # Exponential moving average for feature means
+            if instrument_profile['adaptation_count'] == 0:
+                instrument_profile['feature_means'] = features
+                instrument_profile['feature_stds'] = np.ones_like(features)
+            else:
+                # Adaptive learning rate based on confidence
+                adaptive_rate = self.adaptation_rate * confidence
+                
+                instrument_profile['feature_means'] = (
+                    (1 - adaptive_rate) * instrument_profile['feature_means'] +
+                    adaptive_rate * features
+                )
+                
+                # Update standard deviations
+                feature_diff = features - instrument_profile['feature_means']
+                instrument_profile['feature_stds'] = (
+                    (1 - adaptive_rate) * instrument_profile['feature_stds'] +
+                    adaptive_rate * np.abs(feature_diff)
+                )
+            
+            # Track confidence and adaptation
+            instrument_profile['confidence_scores'].append(confidence)
+            instrument_profile['adaptation_count'] += 1
+            
+            # Store in adaptation history
+            self.adaptation_history.append({
+                'prediction': prediction,
+                'confidence': confidence,
+                'features': features.copy(),
+                'timestamp': len(self.adaptation_history)
+            })
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error in few-shot learning: {e}")
+            return False
+    
+    def adapt_classification(self, features, initial_prediction, initial_confidence):
+        """Adapt classification based on learned song characteristics"""
+        try:
+            # If confidence is already high, return as-is
+            if initial_confidence > 0.9:
+                return initial_prediction, initial_confidence
+            
+            # Calculate similarity to learned instrument profiles
+            instrument_similarities = {}
+            
+            for instrument_id, profile in self.instrument_profiles.items():
+                if profile['adaptation_count'] > 0:
+                    # Calculate feature similarity
+                    mean_features = profile['feature_means']
+                    std_features = profile['feature_stds']
+                    
+                    # Normalized distance
+                    normalized_diff = (features - mean_features) / (std_features + 1e-6)
+                    similarity = np.exp(-np.mean(normalized_diff ** 2))
+                    
+                    # Weight by adaptation confidence
+                    avg_confidence = np.mean(profile['confidence_scores'][-10:])  # Last 10 predictions
+                    weighted_similarity = similarity * avg_confidence
+                    
+                    instrument_similarities[instrument_id] = weighted_similarity
+            
+            # Find best matching instrument
+            if instrument_similarities:
+                best_instrument = max(instrument_similarities.keys(), 
+                                    key=lambda x: instrument_similarities[x])
+                best_similarity = instrument_similarities[best_instrument]
+                
+                # Adaptive threshold based on song characteristics
+                similarity_threshold = self._calculate_adaptive_threshold(features)
+                
+                if best_similarity > similarity_threshold:
+                    # Boost confidence based on similarity
+                    adapted_confidence = min(initial_confidence + best_similarity * 0.3, 0.95)
+                    return best_instrument, adapted_confidence
+            
+            return initial_prediction, initial_confidence
+            
+        except Exception as e:
+            print(f"Error in adaptive classification: {e}")
+            return initial_prediction, initial_confidence
+    
+    def _calculate_adaptive_threshold(self, features):
+        """Calculate adaptive threshold based on song characteristics"""
+        try:
+            # Base threshold
+            base_threshold = 0.3
+            
+            # Adjust based on global characteristics
+            global_centroid = self.song_characteristics.get('global_centroid', 2000)
+            
+            # Lower threshold for songs with more diverse spectral content
+            if global_centroid > 3000:
+                base_threshold *= 0.8  # More permissive for high-frequency content
+            elif global_centroid < 1000:
+                base_threshold *= 1.2  # More restrictive for low-frequency content
+            
+            # Adjust based on adaptation history
+            if len(self.adaptation_history) > 10:
+                recent_confidences = [h['confidence'] for h in self.adaptation_history[-10:]]
+                avg_confidence = np.mean(recent_confidences)
+                
+                # If we're learning well, be more permissive
+                if avg_confidence > 0.8:
+                    base_threshold *= 0.9
+                elif avg_confidence < 0.6:
+                    base_threshold *= 1.1
+            
+            return np.clip(base_threshold, 0.1, 0.7)
+            
+        except Exception:
+            return 0.3
+    
+    def get_instrument_statistics(self):
+        """Get statistics about learned instrument characteristics"""
+        stats = {}
+        for instrument_id, profile in self.instrument_profiles.items():
+            if profile['adaptation_count'] > 0:
+                stats[instrument_id] = {
+                    'adaptations': profile['adaptation_count'],
+                    'avg_confidence': np.mean(profile['confidence_scores'][-10:]),
+                    'stability': 1.0 / (1.0 + np.mean(profile['feature_stds']))
+                }
+        return stats
+    
+    def few_shot_classification(self, audio, onset_times):
+        """Perform few-shot learning classification"""
+        print("🚀 Few-shot learning classification...")
+        
+        classified_onsets = [[] for _ in range(10)]
+        
+        # First pass: collect initial predictions and learn
+        print("📚 Phase 1: Initial learning from confident predictions...")
+        initial_predictions = []
+        
+        for i, onset_time in enumerate(onset_times):
+            try:
+                # Extract features
+                start_sample = int((onset_time - 0.05) * self.sr)
+                end_sample = int((onset_time + 0.05) * self.sr)
+                start_sample = max(0, start_sample)
+                end_sample = min(len(audio), end_sample)
+                
+                if end_sample - start_sample < 100:
+                    initial_predictions.append((2, 0.5))  # Default
+                    continue
+                
+                window = audio[start_sample:end_sample]
+                features, _ = self.feature_extractor.extract_comprehensive_features(window)
+                
+                # Simple initial classification
+                initial_prediction, initial_confidence = self._simple_classify(features)
+                initial_predictions.append((initial_prediction, initial_confidence))
+                
+                # Learn from confident predictions
+                if initial_confidence > self.confidence_threshold:
+                    self.learn_from_confident_prediction(features, initial_prediction, initial_confidence)
+                    
+            except Exception as e:
+                print(f"Error in initial classification: {e}")
+                initial_predictions.append((2, 0.5))
+        
+        print(f"📊 Learned from {len(self.adaptation_history)} confident predictions")
+        
+        # Second pass: apply few-shot learning
+        print("🧠 Phase 2: Applying few-shot adaptation...")
+        
+        for i, onset_time in enumerate(onset_times):
+            try:
+                # Extract features again
+                start_sample = int((onset_time - 0.05) * self.sr)
+                end_sample = int((onset_time + 0.05) * self.sr)
+                start_sample = max(0, start_sample)
+                end_sample = min(len(audio), end_sample)
+                
+                if end_sample - start_sample < 100:
+                    classified_onsets[2].append(onset_time)
+                    continue
+                
+                window = audio[start_sample:end_sample]
+                features, _ = self.feature_extractor.extract_comprehensive_features(window)
+                
+                # Get initial prediction
+                initial_prediction, initial_confidence = initial_predictions[i]
+                
+                # Apply few-shot adaptation
+                adapted_prediction, adapted_confidence = self.adapt_classification(
+                    features, initial_prediction, initial_confidence
+                )
+                
+                # Use adapted prediction if confidence is sufficient
+                if adapted_confidence > 0.6:
+                    classified_onsets[adapted_prediction].append(onset_time)
+                else:
+                    classified_onsets[initial_prediction].append(onset_time)
+                    
+            except Exception as e:
+                print(f"Error in adaptive classification: {e}")
+                classified_onsets[2].append(onset_time)
+        
+        return classified_onsets
+    
+    def _simple_classify(self, features):
+        """Simple classification for initial predictions"""
+        try:
+            # Use basic spectral features
+            spectral_centroid = features[32] if len(features) > 32 else 2000
+            rms = features[43] if len(features) > 43 else 0.3
+            zcr = features[42] if len(features) > 42 else 0.05
+            
+            # Enhanced classification logic with better confidence distribution
+            if spectral_centroid > 7000 and zcr > 0.08:
+                return 0, 0.75  # Hi-hat close
+            elif spectral_centroid > 5000 and zcr > 0.06:
+                return 7, 0.7   # Hi-hat open
+            elif spectral_centroid > 3000 and rms > 0.3:
+                return 1, 0.65  # Snare
+            elif spectral_centroid > 2000 and rms > 0.4:
+                return 9, 0.6   # Crash
+            elif spectral_centroid > 1200:
+                return 3, 0.6   # High tom
+            elif spectral_centroid > 600:
+                return 4, 0.6   # Low tom
+            elif spectral_centroid > 400:
+                return 6, 0.6   # Floor tom
+            elif spectral_centroid < 250:
+                return 2, 0.8   # Bass drum
+            else:
+                return 5, 0.5   # Ride (default for medium range)
+                
+        except Exception:
+            return 2, 0.5  # Default to bass drum
+
+
 class MagentaDrumClassifier:
     """Magenta OaF Drums model integration for drum onset classification"""
     
@@ -1483,12 +1819,13 @@ class HybridDrumClassifier:
 
 
 class AudioToChart:
-    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False, use_advanced_features=False, use_multi_scale=False):
+    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False, use_advanced_features=False, use_multi_scale=False, use_few_shot=False):
         self.input_audio_path = input_audio_path
         self.original_filename = os.path.basename(input_audio_path)
         self.use_magenta_only = use_magenta_only  # Track 3 parameter
         self.use_advanced_features = use_advanced_features  # Track 4 parameter
         self.use_multi_scale = use_multi_scale  # Track 5 parameter
+        self.use_few_shot = use_few_shot  # Track 6 parameter
         
         # Initialize metadata with defaults or provided values
         if metadata is None:
@@ -2349,6 +2686,52 @@ class AudioToChart:
         
         return classified_onsets
     
+    def few_shot_classification(self, fused_onsets):
+        """Track 6: Real-time few-shot learning classification"""
+        print("🚀 Track 6: Real-time few-shot learning...")
+        
+        # Initialize few-shot learning system
+        few_shot_system = FewShotLearningSystem(sr=self.sample_rate)
+        
+        # Initialize song profile with detected characteristics
+        few_shot_system.initialize_song_profile(
+            self.drum_audio, 
+            self.beat_times, 
+            self.tempo_bpm
+        )
+        
+        # Perform few-shot classification
+        classified_onsets = few_shot_system.few_shot_classification(self.drum_audio, fused_onsets)
+        
+        # Get learning statistics
+        stats = few_shot_system.get_instrument_statistics()
+        
+        # Log results
+        total_classified = sum(len(class_onsets) for class_onsets in classified_onsets)
+        print(f"🚀 Few-shot learning classified {total_classified} onsets:")
+        instrument_names = ['Hi-hat Close', 'Snare', 'Bass Drum', 'High Tom', 'Low Tom', 'Ride', 'Floor Tom', 'Hi-hat Open', 'Ride Bell', 'Crash']
+        for i, count in enumerate([len(class_onsets) for class_onsets in classified_onsets]):
+            if count > 0:
+                print(f"  {instrument_names[i]}: {count} onsets")
+        
+        # Print learning statistics
+        print("🧠 Few-shot learning statistics:")
+        if stats:
+            for instrument_id, stat in stats.items():
+                instrument_name = instrument_names[instrument_id]
+                adaptations = stat['adaptations']
+                avg_confidence = stat['avg_confidence']
+                stability = stat['stability']
+                print(f"  {instrument_name}: {adaptations} adaptations, {avg_confidence:.2f} confidence, {stability:.2f} stability")
+        else:
+            print("  No confident predictions found for adaptation")
+        
+        print("🎯 Two-phase learning:")
+        print("  Phase 1: Learn from high-confidence initial predictions")
+        print("  Phase 2: Apply learned patterns to improve classification")
+        
+        return classified_onsets
+    
     def hybrid_onset_classification(self, fused_onsets):
         """Ultra-improved instrument classification using hybrid approach"""
         print("Ultra-improved hybrid onset classification...")
@@ -2548,7 +2931,10 @@ class AudioToChart:
         fused_onsets = self.fuse_onset_detections()
         
         # Track selection for different classification approaches
-        if self.use_multi_scale:
+        if self.use_few_shot:
+            print("🚀 Track 6: Using real-time few-shot learning")
+            classified_onsets = self.few_shot_classification(fused_onsets)
+        elif self.use_multi_scale:
             print("⏰ Track 5: Using multi-scale temporal analysis")
             classified_onsets = self.multi_scale_classification(fused_onsets)
         elif self.use_advanced_features:

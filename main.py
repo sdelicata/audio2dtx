@@ -194,6 +194,10 @@ def main():
     parser.add_argument('--use-multi-scale', action='store_true',
                        help='Track 5: Use multi-scale temporal analysis for onset detection and classification')
     
+    # Track 6: Real-Time Few-Shot Learning
+    parser.add_argument('--use-few-shot', action='store_true',
+                       help='Track 6: Use real-time few-shot learning for song-specific adaptation')
+    
     # Parse arguments, but handle backwards compatibility
     if len(sys.argv) < 2:
         print("Usage: python main.py <input_audio_file> [options]")
@@ -204,6 +208,7 @@ def main():
         print("Example: python main.py song.mp3 --use-magenta-only --title 'MagentaOnly_Track3'")
         print("Example: python main.py song.mp3 --use-advanced-features --title 'AdvancedFeatures_Track4'")
         print("Example: python main.py song.mp3 --use-multi-scale --title 'MultiScale_Track5'")
+        print("Example: python main.py song.mp3 --use-few-shot --title 'FewShot_Track6'")
         sys.exit(1)
     
     # Handle old-style command line (backwards compatibility)
@@ -257,7 +262,8 @@ def main():
         use_magenta_only = args.use_magenta_only if args else False
         use_advanced_features = args.use_advanced_features if args else False
         use_multi_scale = args.use_multi_scale if args else False
-        chart = AudioToChart(input_audio, metadata, use_magenta_only=use_magenta_only, use_advanced_features=use_advanced_features, use_multi_scale=use_multi_scale)
+        use_few_shot = args.use_few_shot if args else False
+        chart = AudioToChart(input_audio, metadata, use_magenta_only=use_magenta_only, use_advanced_features=use_advanced_features, use_multi_scale=use_multi_scale, use_few_shot=use_few_shot)
         
         # Extract beats from audio
         logger.info("Extracting beats and creating chart...")
