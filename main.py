@@ -198,6 +198,10 @@ def main():
     parser.add_argument('--use-few-shot', action='store_true',
                        help='Track 6: Use real-time few-shot learning for song-specific adaptation')
     
+    # Track 7: Ensemble of Specialized Models
+    parser.add_argument('--use-ensemble', action='store_true',
+                       help='Track 7: Use ensemble of specialized models for hierarchical classification')
+    
     # Parse arguments, but handle backwards compatibility
     if len(sys.argv) < 2:
         print("Usage: python main.py <input_audio_file> [options]")
@@ -209,6 +213,7 @@ def main():
         print("Example: python main.py song.mp3 --use-advanced-features --title 'AdvancedFeatures_Track4'")
         print("Example: python main.py song.mp3 --use-multi-scale --title 'MultiScale_Track5'")
         print("Example: python main.py song.mp3 --use-few-shot --title 'FewShot_Track6'")
+        print("Example: python main.py song.mp3 --use-ensemble --title 'Ensemble_Track7'")
         sys.exit(1)
     
     # Handle old-style command line (backwards compatibility)
@@ -263,7 +268,8 @@ def main():
         use_advanced_features = args.use_advanced_features if args else False
         use_multi_scale = args.use_multi_scale if args else False
         use_few_shot = args.use_few_shot if args else False
-        chart = AudioToChart(input_audio, metadata, use_magenta_only=use_magenta_only, use_advanced_features=use_advanced_features, use_multi_scale=use_multi_scale, use_few_shot=use_few_shot)
+        use_ensemble = args.use_ensemble if args else False
+        chart = AudioToChart(input_audio, metadata, use_magenta_only=use_magenta_only, use_advanced_features=use_advanced_features, use_multi_scale=use_multi_scale, use_few_shot=use_few_shot, use_ensemble=use_ensemble)
         
         # Extract beats from audio
         logger.info("Extracting beats and creating chart...")

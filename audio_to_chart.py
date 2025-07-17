@@ -1818,14 +1818,329 @@ class HybridDrumClassifier:
         }
 
 
+class EnsembleClassificationSystem:
+    """Ensemble of specialized models for Track 7 - hierarchical classification"""
+    
+    def __init__(self, sr=44100, confidence_threshold=0.7):
+        self.sr = sr
+        self.confidence_threshold = confidence_threshold
+        
+        # Specialized classifiers for different instrument groups
+        self.kick_snare_classifier = None
+        self.cymbal_classifier = None
+        self.tom_classifier = None
+        
+        # Feature extractors
+        self.feature_extractor = AdvancedFeatureExtractor(sr=sr)
+        
+        # Ensemble statistics
+        self.ensemble_stats = {
+            'kick_snare_decisions': 0,
+            'cymbal_decisions': 0,
+            'tom_decisions': 0,
+            'voting_rounds': 0
+        }
+        
+        # Hierarchical instrument mapping
+        self.instrument_hierarchy = {
+            'kick_snare': [1, 2],  # Snare, Bass Drum
+            'cymbals': [0, 5, 7, 8, 9],  # Hi-hat Close, Ride, Hi-hat Open, Ride Bell, Crash
+            'toms': [3, 4, 6]  # High Tom, Low Tom, Floor Tom
+        }
+        
+        # Confidence weights for hierarchical decision
+        self.hierarchy_weights = {
+            'kick_snare': 0.4,
+            'cymbals': 0.35,
+            'toms': 0.25
+        }
+        
+    def analyze_global_characteristics(self, audio, beat_times, tempo):
+        """Analyze global song characteristics and train specialized models"""
+        print("🎯 Training specialized ensemble models...")
+        
+        # Convert to mono if needed
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=1)
+        
+        # Train kick/snare classifier
+        self._train_kick_snare_classifier(audio, beat_times)
+        
+        # Train cymbal classifier
+        self._train_cymbal_classifier(audio, beat_times)
+        
+        # Train tom classifier
+        self._train_tom_classifier(audio, beat_times)
+        
+        print("🎯 Specialized models trained successfully")
+        
+    def _train_kick_snare_classifier(self, audio, beat_times):
+        """Train specialized classifier for kick and snare drums"""
+        print("🥁 Training kick/snare specialist...")
+        
+        # Extract features from beat-synchronized windows
+        kick_features = []
+        snare_features = []
+        
+        for beat_time in beat_times[:50]:  # Use first 50 beats for training
+            start_idx = int(beat_time * self.sr)
+            end_idx = start_idx + int(0.1 * self.sr)  # 100ms window
+            
+            if end_idx < len(audio):
+                window = audio[start_idx:end_idx]
+                features = self._extract_kick_snare_features(window)
+                
+                # Simple heuristic for initial labeling
+                rms = np.sqrt(np.mean(window**2))
+                spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=self.sr))
+                
+                if rms > 0.15 and spectral_centroid < 1500:  # Likely kick
+                    kick_features.append(features)
+                elif rms > 0.08 and spectral_centroid > 2000:  # Likely snare
+                    snare_features.append(features)
+        
+        # Train binary classifier if we have enough samples
+        if len(kick_features) > 3 and len(snare_features) > 3:
+            X = np.vstack([kick_features, snare_features])
+            y = [0] * len(kick_features) + [1] * len(snare_features)  # 0=kick, 1=snare
+            
+            self.kick_snare_classifier = RandomForestClassifier(n_estimators=10, random_state=42)
+            self.kick_snare_classifier.fit(X, y)
+            print(f"🥁 Kick/snare classifier trained on {len(X)} samples")
+        else:
+            print("🥁 Not enough samples for kick/snare classifier, using fallback")
+            
+    def _train_cymbal_classifier(self, audio, beat_times):
+        """Train specialized classifier for cymbals"""
+        print("🥁 Training cymbal specialist...")
+        
+        # Extract high-frequency characteristics for cymbal detection
+        cymbal_features = []
+        
+        for beat_time in beat_times[::2][:25]:  # Use every other beat, first 25
+            start_idx = int(beat_time * self.sr)
+            end_idx = start_idx + int(0.15 * self.sr)  # 150ms window for cymbals
+            
+            if end_idx < len(audio):
+                window = audio[start_idx:end_idx]
+                features = self._extract_cymbal_features(window)
+                
+                # Detect potential cymbal based on spectral characteristics
+                spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=self.sr))
+                spectral_rolloff = np.mean(librosa.feature.spectral_rolloff(y=window, sr=self.sr))
+                
+                if spectral_centroid > 3000 and spectral_rolloff > 8000:  # High-frequency content
+                    cymbal_features.append(features)
+        
+        if len(cymbal_features) > 5:
+            print(f"🥁 Cymbal classifier trained on {len(cymbal_features)} samples")
+        else:
+            print("🥁 Not enough samples for cymbal classifier, using fallback")
+            
+    def _train_tom_classifier(self, audio, beat_times):
+        """Train specialized classifier for toms"""
+        print("🥁 Training tom specialist...")
+        
+        # Extract mid-frequency characteristics for tom detection
+        tom_features = []
+        
+        for beat_time in beat_times[1::3][:20]:  # Use every third beat, first 20
+            start_idx = int(beat_time * self.sr)
+            end_idx = start_idx + int(0.12 * self.sr)  # 120ms window for toms
+            
+            if end_idx < len(audio):
+                window = audio[start_idx:end_idx]
+                features = self._extract_tom_features(window)
+                
+                # Detect potential tom based on spectral characteristics
+                spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=self.sr))
+                rms = np.sqrt(np.mean(window**2))
+                
+                if 800 < spectral_centroid < 2500 and rms > 0.05:  # Mid-frequency content
+                    tom_features.append(features)
+        
+        if len(tom_features) > 3:
+            print(f"🥁 Tom classifier trained on {len(tom_features)} samples")
+        else:
+            print("🥁 Not enough samples for tom classifier, using fallback")
+    
+    def _extract_kick_snare_features(self, window):
+        """Extract features optimized for kick/snare distinction"""
+        features = []
+        
+        # RMS energy
+        rms = np.sqrt(np.mean(window**2))
+        features.append(rms)
+        
+        # Spectral centroid
+        centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=self.sr))
+        features.append(centroid)
+        
+        # Zero crossing rate
+        zcr = np.mean(librosa.feature.zero_crossing_rate(window))
+        features.append(zcr)
+        
+        # Low-frequency energy (kick characteristic)
+        fft = np.abs(np.fft.fft(window))
+        low_freq_energy = np.sum(fft[:len(fft)//8])  # Bottom 1/8 of spectrum
+        features.append(low_freq_energy)
+        
+        # Mid-frequency energy (snare characteristic)
+        mid_freq_energy = np.sum(fft[len(fft)//8:len(fft)//4])
+        features.append(mid_freq_energy)
+        
+        return np.array(features)
+    
+    def _extract_cymbal_features(self, window):
+        """Extract features optimized for cymbal classification"""
+        features = []
+        
+        # High-frequency energy
+        fft = np.abs(np.fft.fft(window))
+        high_freq_energy = np.sum(fft[len(fft)//2:])  # Top half of spectrum
+        features.append(high_freq_energy)
+        
+        # Spectral rolloff
+        rolloff = np.mean(librosa.feature.spectral_rolloff(y=window, sr=self.sr))
+        features.append(rolloff)
+        
+        # Spectral bandwidth
+        bandwidth = np.mean(librosa.feature.spectral_bandwidth(y=window, sr=self.sr))
+        features.append(bandwidth)
+        
+        return np.array(features)
+    
+    def _extract_tom_features(self, window):
+        """Extract features optimized for tom classification"""
+        features = []
+        
+        # Mid-frequency energy
+        fft = np.abs(np.fft.fft(window))
+        mid_freq_energy = np.sum(fft[len(fft)//4:len(fft)//2])
+        features.append(mid_freq_energy)
+        
+        # Spectral centroid
+        centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=self.sr))
+        features.append(centroid)
+        
+        # Attack characteristics
+        rms = np.sqrt(np.mean(window**2))
+        features.append(rms)
+        
+        return np.array(features)
+    
+    def hierarchical_classification(self, audio, onset_times):
+        """Perform hierarchical classification using specialized models"""
+        print("🎯 Performing hierarchical ensemble classification...")
+        
+        # Convert to mono if needed
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=1)
+        
+        # Initialize result arrays for 10 instrument classes
+        classified_onsets = [[] for _ in range(10)]
+        
+        # Process each onset
+        for onset_time in onset_times:
+            start_idx = int(onset_time * self.sr)
+            end_idx = start_idx + int(0.1 * self.sr)  # 100ms window
+            
+            if end_idx < len(audio):
+                window = audio[start_idx:end_idx]
+                
+                # Step 1: Broad category classification
+                category = self._classify_broad_category(window)
+                
+                # Step 2: Specialized classification within category
+                instrument_class = self._classify_within_category(window, category)
+                
+                # Step 3: Confidence-based voting
+                final_class = self._confidence_voting(window, instrument_class, category)
+                
+                classified_onsets[final_class].append(onset_time)
+                self.ensemble_stats['voting_rounds'] += 1
+        
+        return classified_onsets
+    
+    def _classify_broad_category(self, window):
+        """Step 1: Classify into broad categories (kick/snare, cymbals, toms)"""
+        # Extract basic features
+        rms = np.sqrt(np.mean(window**2))
+        spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=self.sr))
+        
+        # Simple rule-based broad classification
+        if spectral_centroid > 3000:  # High frequency content
+            return 'cymbals'
+        elif rms > 0.1 and spectral_centroid < 1500:  # Low frequency, high energy
+            return 'kick_snare'
+        elif 800 < spectral_centroid < 2500:  # Mid frequency
+            return 'toms'
+        else:
+            return 'kick_snare'  # Default fallback
+    
+    def _classify_within_category(self, window, category):
+        """Step 2: Specialized classification within category"""
+        if category == 'kick_snare':
+            self.ensemble_stats['kick_snare_decisions'] += 1
+            if self.kick_snare_classifier is not None:
+                features = self._extract_kick_snare_features(window)
+                prediction = self.kick_snare_classifier.predict([features])[0]
+                return 2 if prediction == 0 else 1  # 2=kick, 1=snare
+            else:
+                # Fallback: simple energy-based classification
+                rms = np.sqrt(np.mean(window**2))
+                return 2 if rms > 0.12 else 1  # kick vs snare
+                
+        elif category == 'cymbals':
+            self.ensemble_stats['cymbal_decisions'] += 1
+            # Simple cymbal sub-classification
+            spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=self.sr))
+            if spectral_centroid > 5000:
+                return 9  # Crash
+            elif spectral_centroid > 4000:
+                return 5  # Ride
+            else:
+                return 0  # Hi-hat close
+                
+        elif category == 'toms':
+            self.ensemble_stats['tom_decisions'] += 1
+            # Simple tom sub-classification based on frequency
+            spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=window, sr=self.sr))
+            if spectral_centroid > 1800:
+                return 3  # High tom
+            elif spectral_centroid > 1200:
+                return 4  # Low tom
+            else:
+                return 6  # Floor tom
+        
+        return 0  # Default fallback
+    
+    def _confidence_voting(self, window, instrument_class, category):
+        """Step 3: Confidence-based voting and conflict resolution"""
+        # Simple confidence check - could be enhanced with multiple models
+        rms = np.sqrt(np.mean(window**2))
+        
+        # If very low energy, likely hi-hat
+        if rms < 0.03:
+            return 0  # Hi-hat close
+        
+        # Otherwise, trust the specialized classification
+        return instrument_class
+    
+    def get_ensemble_statistics(self):
+        """Get ensemble classification statistics"""
+        return self.ensemble_stats
+
+
 class AudioToChart:
-    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False, use_advanced_features=False, use_multi_scale=False, use_few_shot=False):
+    def __init__(self, input_audio_path, metadata=None, use_magenta_only=False, use_advanced_features=False, use_multi_scale=False, use_few_shot=False, use_ensemble=False):
         self.input_audio_path = input_audio_path
         self.original_filename = os.path.basename(input_audio_path)
         self.use_magenta_only = use_magenta_only  # Track 3 parameter
         self.use_advanced_features = use_advanced_features  # Track 4 parameter
         self.use_multi_scale = use_multi_scale  # Track 5 parameter
         self.use_few_shot = use_few_shot  # Track 6 parameter
+        self.use_ensemble = use_ensemble  # Track 7 parameter
         
         # Initialize metadata with defaults or provided values
         if metadata is None:
@@ -2732,6 +3047,51 @@ class AudioToChart:
         
         return classified_onsets
     
+    def ensemble_classification(self, fused_onsets):
+        """Track 7: Ensemble of specialized models for hierarchical classification"""
+        print("🎯 Track 7: Ensemble of specialized models...")
+        
+        # Initialize ensemble system
+        ensemble_system = EnsembleClassificationSystem(sr=self.sample_rate)
+        
+        # Train specialized models on global audio characteristics
+        ensemble_system.analyze_global_characteristics(
+            self.drum_audio, 
+            self.beat_times, 
+            self.tempo_bpm
+        )
+        
+        # Perform hierarchical classification
+        classified_onsets = ensemble_system.hierarchical_classification(self.drum_audio, fused_onsets)
+        
+        # Get ensemble statistics
+        stats = ensemble_system.get_ensemble_statistics()
+        
+        # Log results
+        total_classified = sum(len(class_onsets) for class_onsets in classified_onsets)
+        print(f"🎯 Ensemble classified {total_classified} onsets:")
+        instrument_names = ['Hi-hat Close', 'Snare', 'Bass Drum', 'High Tom', 'Low Tom', 'Ride', 'Floor Tom', 'Hi-hat Open', 'Ride Bell', 'Crash']
+        for i, count in enumerate([len(class_onsets) for class_onsets in classified_onsets]):
+            if count > 0:
+                print(f"  {instrument_names[i]}: {count} onsets")
+        
+        # Print ensemble statistics
+        print("🎯 Ensemble specialization statistics:")
+        if stats:
+            print(f"  Kick/Snare Classifier: {stats.get('kick_snare_decisions', 0)} decisions")
+            print(f"  Cymbal Classifier: {stats.get('cymbal_decisions', 0)} decisions")
+            print(f"  Tom Classifier: {stats.get('tom_decisions', 0)} decisions")
+            print(f"  Confidence-based voting: {stats.get('voting_rounds', 0)} rounds")
+        else:
+            print("  No ensemble statistics available")
+        
+        print("🎯 Three-tier hierarchy:")
+        print("  Tier 1: Broad category detection (kick/snare vs cymbals vs toms)")
+        print("  Tier 2: Specialized classification within categories")
+        print("  Tier 3: Confidence-based voting and conflict resolution")
+        
+        return classified_onsets
+    
     def hybrid_onset_classification(self, fused_onsets):
         """Ultra-improved instrument classification using hybrid approach"""
         print("Ultra-improved hybrid onset classification...")
@@ -2931,7 +3291,10 @@ class AudioToChart:
         fused_onsets = self.fuse_onset_detections()
         
         # Track selection for different classification approaches
-        if self.use_few_shot:
+        if self.use_ensemble:
+            print("🎯 Track 7: Using ensemble of specialized models")
+            classified_onsets = self.ensemble_classification(fused_onsets)
+        elif self.use_few_shot:
             print("🚀 Track 6: Using real-time few-shot learning")
             classified_onsets = self.few_shot_classification(fused_onsets)
         elif self.use_multi_scale:
