@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 import argparse
+import time
 
 # Add src to Python path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -187,6 +188,154 @@ def determine_track_type(args):
     else:
         return 'default'
 
+def get_all_track_types():
+    """Get all available track types for comparison."""
+    return [
+        ('default', 'Default Hybrid'),
+        ('magenta_only', 'Track 3: Magenta-Only'),
+        ('advanced_features', 'Track 4: Advanced Features'),
+        ('multi_scale', 'Track 5: Multi-Scale'),
+        ('few_shot', 'Track 6: Few-Shot Learning'),
+        ('ensemble', 'Track 7: Ensemble'),
+        ('augmentation', 'Track 8: Augmentation'),
+        ('rock_ultimate', 'Track 9: Rock Ultimate')
+    ]
+
+def process_all_tracks(input_audio, base_output_dir, metadata, input_filename):
+    """Process audio file with all available tracks for comparison."""
+    
+    # Get all track types
+    all_tracks = get_all_track_types()
+    
+    # Results storage
+    comparison_results = []
+    
+    logger.info(f"🔄 Starting comparison processing with {len(all_tracks)} tracks")
+    logger.info(f"📁 Results will be saved in separate folders under: {base_output_dir}")
+    
+    # Process each track
+    for track_type, track_name in all_tracks:
+        logger.info(f"🎯 Processing {track_name} ({track_type})")
+        
+        # Create track-specific output directory
+        track_output_dir = os.path.join(base_output_dir, f"track_{track_type}")
+        os.makedirs(track_output_dir, exist_ok=True)
+        
+        # Record start time
+        start_time = time.time()
+        
+        try:
+            # Load settings and initialize processor
+            settings = load_settings()
+            processor = AudioProcessor(settings)
+            
+            # Process audio file with specific track
+            dtx_path = processor.process_audio_file(
+                input_file=input_audio,
+                output_dir=track_output_dir,
+                metadata=metadata,
+                track_type=track_type
+            )
+            
+            # Get processing results
+            results = processor.get_processing_results()
+            processing_time = time.time() - start_time
+            
+            # Store results
+            comparison_results.append({
+                'track_type': track_type,
+                'track_name': track_name,
+                'processing_time': processing_time,
+                'onset_count': results.get('onset_count', 0),
+                'classified_count': results.get('classified_count', 0),
+                'output_path': dtx_path,
+                'success': True,
+                'error': None
+            })
+            
+            logger.info(f"✅ {track_name} completed in {processing_time:.1f}s")
+            
+            # Clean up processor
+            processor.cleanup()
+            
+        except Exception as e:
+            processing_time = time.time() - start_time
+            logger.error(f"❌ {track_name} failed: {str(e)}")
+            
+            comparison_results.append({
+                'track_type': track_type,
+                'track_name': track_name,
+                'processing_time': processing_time,
+                'onset_count': 0,
+                'classified_count': 0,
+                'output_path': None,
+                'success': False,
+                'error': str(e)
+            })
+    
+    # Generate comparison report
+    generate_comparison_report(comparison_results, base_output_dir, input_filename)
+    
+    return comparison_results
+
+def generate_comparison_report(results, output_dir, input_filename):
+    """Generate a comparison report of all track results."""
+    report_path = os.path.join(output_dir, "comparison_report.txt")
+    
+    with open(report_path, 'w') as f:
+        f.write("=== AUDIO2DTX TRACK COMPARISON REPORT ===\n\n")
+        f.write(f"Input file: {input_filename}\n")
+        f.write(f"Total tracks tested: {len(results)}\n")
+        f.write(f"Successful conversions: {sum(1 for r in results if r['success'])}\n")
+        f.write(f"Failed conversions: {sum(1 for r in results if not r['success'])}\n\n")
+        
+        # Summary table
+        f.write("SUMMARY TABLE:\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"{'Track Name':<25} {'Status':<10} {'Time(s)':<10} {'Onsets':<10} {'Notes':<10}\n")
+        f.write("-" * 80 + "\n")
+        
+        for result in results:
+            status = "SUCCESS" if result['success'] else "FAILED"
+            f.write(f"{result['track_name']:<25} {status:<10} {result['processing_time']:<10.1f} "
+                   f"{result['onset_count']:<10} {result['classified_count']:<10}\n")
+        
+        f.write("\nDETAILED RESULTS:\n")
+        f.write("=" * 80 + "\n")
+        
+        for result in results:
+            f.write(f"\n{result['track_name']} ({result['track_type']}):\n")
+            f.write(f"  Status: {'SUCCESS' if result['success'] else 'FAILED'}\n")
+            f.write(f"  Processing Time: {result['processing_time']:.1f} seconds\n")
+            f.write(f"  Onsets Detected: {result['onset_count']}\n")
+            f.write(f"  Notes Generated: {result['classified_count']}\n")
+            f.write(f"  Output: {result['output_path'] if result['success'] else 'N/A'}\n")
+            if result['error']:
+                f.write(f"  Error: {result['error']}\n")
+        
+        # Recommendations
+        f.write("\nRECOMMENDATIONS:\n")
+        f.write("=" * 80 + "\n")
+        
+        successful_results = [r for r in results if r['success']]
+        if successful_results:
+            # Find fastest track
+            fastest = min(successful_results, key=lambda r: r['processing_time'])
+            f.write(f"Fastest processing: {fastest['track_name']} ({fastest['processing_time']:.1f}s)\n")
+            
+            # Find track with most onsets
+            most_onsets = max(successful_results, key=lambda r: r['onset_count'])
+            f.write(f"Most onsets detected: {most_onsets['track_name']} ({most_onsets['onset_count']} onsets)\n")
+            
+            # Find track with most classified notes
+            most_notes = max(successful_results, key=lambda r: r['classified_count'])
+            f.write(f"Most notes generated: {most_notes['track_name']} ({most_notes['classified_count']} notes)\n")
+        
+        f.write(f"\nReport generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    
+    logger.info(f"📊 Comparison report saved to: {report_path}")
+    return report_path
+
 def main():
     """Main entry point for audio to DTX conversion"""
     parser = argparse.ArgumentParser(description='Convert audio files to DTXMania charts')
@@ -237,6 +386,10 @@ def main():
     parser.add_argument('--use-rock-ultimate', action='store_true',
                        help='Track 9: Ultimate rock/metal optimization combining all tracks for maximum accuracy')
     
+    # Compare all tracks option
+    parser.add_argument('--compare-all-tracks', action='store_true',
+                       help='Generate conversions using all available tracks for comparison (creates separate output folders)')
+    
     # Parse arguments, but handle backwards compatibility
     if len(sys.argv) < 2:
         print("Usage: python main.py <input_audio_file> [options]")
@@ -251,6 +404,7 @@ def main():
         print("Example: python main.py song.mp3 --use-ensemble --title 'Ensemble_Track7'")
         print("Example: python main.py song.mp3 --use-augmentation --title 'Augmentation_Track8'")
         print("Example: python main.py song.mp3 --use-rock-ultimate --title 'RockUltimate_Track9'")
+        print("Example: python main.py song.mp3 --compare-all-tracks --batch")
         sys.exit(1)
     
     # Handle old-style command line (backwards compatibility)
@@ -323,6 +477,25 @@ def main():
         input_audio = validate_audio_file(input_audio)
         metadata = validate_metadata(metadata)
         
+        # Check if we should compare all tracks
+        if args and args.compare_all_tracks:
+            logger.info("🔄 Starting comparison mode - processing all tracks")
+            
+            # Process all tracks
+            comparison_results = process_all_tracks(input_audio, output_dir, metadata, input_filename)
+            
+            # Summary
+            successful_tracks = [r for r in comparison_results if r['success']]
+            failed_tracks = [r for r in comparison_results if not r['success']]
+            
+            logger.info(f"✅ Comparison completed: {len(successful_tracks)} successful, {len(failed_tracks)} failed")
+            logger.info(f"📊 Results saved in {len(successful_tracks)} separate folders")
+            logger.info(f"📋 See comparison_report.txt for detailed analysis")
+            
+            # Return early for comparison mode
+            return
+        
+        # Single track processing (default behavior)
         # Load settings and initialize processor
         settings = load_settings()
         processor = AudioProcessor(settings)
