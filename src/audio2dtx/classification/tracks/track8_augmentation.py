@@ -14,6 +14,7 @@ warnings.filterwarnings('ignore')
 
 from ..base_classifier import BaseClassifier, ClassificationResult
 from ..feature_extractor import FeatureExtractor
+from ..base_track_mixin import BaseTrackMixin
 from ...config.settings import Settings
 from ...utils.exceptions import ClassificationError
 from ...utils.logging import get_logger
@@ -165,7 +166,7 @@ class AdvancedAudioPreprocessor:
             return audio
 
 
-class AugmentationTrack(BaseClassifier):
+class AugmentationTrack(BaseClassifier, BaseTrackMixin):
     """
     Track 8: Data Augmentation and Preprocessing
     

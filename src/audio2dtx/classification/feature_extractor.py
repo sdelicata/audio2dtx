@@ -113,7 +113,7 @@ class FeatureExtractor:
     
     def extract_spectral_features(self, audio_window: np.ndarray) -> Dict[str, np.ndarray]:
         """
-        Extract spectral features (chroma, contrast, tonnetz).
+        Extract spectral features (chroma, contrast, tonnetz, flatness).
         
         Args:
             audio_window: Audio data
@@ -151,10 +151,39 @@ class FeatureExtractor:
             )
             features['tonnetz'] = np.mean(tonnetz, axis=1)
             
+            # Spectral flatness
+            flatness = librosa.feature.spectral_flatness(
+                y=audio_window,
+                hop_length=self.hop_length,
+                n_fft=self.n_fft
+            )
+            features['spectral_flatness'] = np.mean(flatness)
+            
+            # Spectral spread
+            spectral_spread = self._calculate_spectral_spread(audio_window)
+            features['spectral_spread'] = spectral_spread
+            
             return features
             
         except Exception as e:
             raise ProcessingError(f"Spectral feature extraction failed: {e}")
+    
+    def _calculate_spectral_spread(self, audio_window: np.ndarray) -> float:
+        """Calculate spectral spread (bandwidth around centroid)."""
+        try:
+            stft = librosa.stft(audio_window, hop_length=self.hop_length, n_fft=self.n_fft)
+            magnitude = np.abs(stft)
+            
+            # Calculate centroid
+            freqs = librosa.fft_frequencies(sr=self.sr, n_fft=self.n_fft)
+            centroid = np.sum(magnitude * freqs[:, np.newaxis], axis=0) / np.sum(magnitude, axis=0)
+            
+            # Calculate spread
+            spread = np.sqrt(np.sum(magnitude * (freqs[:, np.newaxis] - centroid)**2, axis=0) / np.sum(magnitude, axis=0))
+            
+            return float(np.mean(spread))
+        except Exception:
+            return 0.0
     
     def extract_frequency_band_features(self, audio_window: np.ndarray) -> Dict[str, float]:
         """
@@ -282,10 +311,183 @@ class FeatureExtractor:
             features['spectral_flux_mean'] = float(np.mean(spectral_flux))
             features['spectral_flux_std'] = float(np.std(spectral_flux))
             
+            # Temporal envelope features
+            envelope = np.abs(audio_window)
+            features['envelope_mean'] = float(np.mean(envelope))
+            features['envelope_std'] = float(np.std(envelope))
+            features['envelope_max'] = float(np.max(envelope))
+            features['envelope_min'] = float(np.min(envelope))
+            
+            # Roughness (measure of amplitude modulation)
+            roughness = self._calculate_roughness(audio_window)
+            features['roughness'] = roughness
+            
+            # Autocorrelation peak (periodicity measure)
+            autocorr_peak = self._calculate_autocorr_peak(audio_window)
+            features['autocorr_peak'] = autocorr_peak
+            
             return features
             
         except Exception as e:
             raise ProcessingError(f"Temporal feature extraction failed: {e}")
+    
+    def _calculate_roughness(self, audio_window: np.ndarray) -> float:
+        """Calculate roughness (amplitude modulation strength)."""
+        try:
+            if len(audio_window) < 2:
+                return 0.0
+            
+            # Calculate amplitude modulation
+            envelope = np.abs(audio_window)
+            diff = np.diff(envelope)
+            roughness = np.sqrt(np.mean(diff**2))
+            
+            return float(roughness)
+        except Exception:
+            return 0.0
+    
+    def _calculate_autocorr_peak(self, audio_window: np.ndarray) -> float:
+        """Calculate autocorrelation peak (periodicity measure)."""
+        try:
+            if len(audio_window) < 2:
+                return 0.0
+            
+            # Calculate autocorrelation
+            autocorr = np.correlate(audio_window, audio_window, mode='full')
+            autocorr = autocorr[len(autocorr)//2:]
+            
+            # Find peak (excluding zero lag)
+            if len(autocorr) > 1:
+                peak_idx = np.argmax(autocorr[1:]) + 1
+                peak_value = autocorr[peak_idx] / autocorr[0] if autocorr[0] != 0 else 0
+                return float(peak_value)
+            
+            return 0.0
+        except Exception:
+            return 0.0
+    
+    def extract_harmonic_features(self, audio_window: np.ndarray) -> Dict[str, float]:
+        """
+        Extract harmonic and percussive features.
+        
+        Args:
+            audio_window: Audio data
+            
+        Returns:
+            Dictionary of harmonic features
+        """
+        try:
+            features = {}
+            
+            # Harmonic-percussive separation
+            harmonic, percussive = librosa.effects.hpss(audio_window)
+            
+            # Harmonic energy ratio
+            harmonic_energy = np.sum(harmonic**2)
+            percussive_energy = np.sum(percussive**2)
+            total_energy = harmonic_energy + percussive_energy
+            
+            if total_energy > 0:
+                features['harmonic_ratio'] = float(harmonic_energy / total_energy)
+                features['percussive_ratio'] = float(percussive_energy / total_energy)
+            else:
+                features['harmonic_ratio'] = 0.0
+                features['percussive_ratio'] = 0.0
+            
+            # Harmonic complexity
+            if harmonic_energy > 0:
+                harmonic_stft = librosa.stft(harmonic, hop_length=self.hop_length, n_fft=self.n_fft)
+                harmonic_mag = np.abs(harmonic_stft)
+                
+                # Spectral peaks in harmonic content
+                peaks_count = 0
+                for freq_bin in range(1, harmonic_mag.shape[0]-1):
+                    if np.any(harmonic_mag[freq_bin, :] > np.mean(harmonic_mag) * 2):
+                        peaks_count += 1
+                
+                features['harmonic_peaks'] = float(peaks_count)
+                features['harmonic_complexity'] = float(peaks_count / harmonic_mag.shape[0])
+            else:
+                features['harmonic_peaks'] = 0.0
+                features['harmonic_complexity'] = 0.0
+            
+            # Percussive characteristics
+            if percussive_energy > 0:
+                percussive_envelope = np.abs(percussive)
+                percussive_attack = np.argmax(percussive_envelope)
+                features['percussive_attack_ratio'] = float(percussive_attack / len(percussive_envelope))
+                
+                # Percussive decay
+                if percussive_attack < len(percussive_envelope) - 1:
+                    decay_part = percussive_envelope[percussive_attack:]
+                    features['percussive_decay_rate'] = float(np.mean(np.diff(decay_part)))
+                else:
+                    features['percussive_decay_rate'] = 0.0
+            else:
+                features['percussive_attack_ratio'] = 0.0
+                features['percussive_decay_rate'] = 0.0
+            
+            return features
+            
+        except Exception as e:
+            # Return default values on error
+            return {
+                'harmonic_ratio': 0.0,
+                'percussive_ratio': 1.0,
+                'harmonic_peaks': 0.0,
+                'harmonic_complexity': 0.0,
+                'percussive_attack_ratio': 0.0,
+                'percussive_decay_rate': 0.0
+            }
+    
+    def extract_psychoacoustic_features(self, audio_window: np.ndarray) -> Dict[str, float]:
+        """
+        Extract psychoacoustic features.
+        
+        Args:
+            audio_window: Audio data
+            
+        Returns:
+            Dictionary of psychoacoustic features
+        """
+        try:
+            features = {}
+            
+            # Loudness approximation (A-weighting would be ideal)
+            rms = np.sqrt(np.mean(audio_window**2))
+            features['loudness_estimate'] = float(20 * np.log10(rms + 1e-10))
+            
+            # Brightness (spectral centroid normalized)
+            spectral_centroid = librosa.feature.spectral_centroid(
+                y=audio_window, sr=self.sr, hop_length=self.hop_length
+            )
+            features['brightness'] = float(np.mean(spectral_centroid) / (self.sr / 2))
+            
+            # Sharpness (based on specific loudness)
+            stft = librosa.stft(audio_window, hop_length=self.hop_length, n_fft=self.n_fft)
+            magnitude = np.abs(stft)
+            freqs = librosa.fft_frequencies(sr=self.sr, n_fft=self.n_fft)
+            
+            # Weighted by frequency for sharpness
+            sharpness_weights = freqs / (freqs + 1000)  # Simplified weighting
+            sharpness = np.sum(magnitude * sharpness_weights[:, np.newaxis]) / np.sum(magnitude)
+            features['sharpness'] = float(sharpness)
+            
+            # Spread (spectral bandwidth normalized)
+            spectral_bandwidth = librosa.feature.spectral_bandwidth(
+                y=audio_window, sr=self.sr, hop_length=self.hop_length
+            )
+            features['spread'] = float(np.mean(spectral_bandwidth) / (self.sr / 2))
+            
+            return features
+            
+        except Exception:
+            return {
+                'loudness_estimate': -60.0,
+                'brightness': 0.0,
+                'sharpness': 0.0,
+                'spread': 0.0
+            }
     
     def extract_all_features(self, 
                            audio_window: np.ndarray,
@@ -309,6 +511,8 @@ class FeatureExtractor:
         if feature_set in ['advanced', 'comprehensive']:
             features.update(self.extract_statistical_features(audio_window))
             features.update(self.extract_temporal_features(audio_window))
+            features.update(self.extract_harmonic_features(audio_window))
+            features.update(self.extract_psychoacoustic_features(audio_window))
             
             # Add MFCC features as flattened arrays
             mfcc_features = self.extract_mfcc_features(audio_window)
@@ -320,8 +524,11 @@ class FeatureExtractor:
             # Add spectral features as flattened arrays
             spectral_features = self.extract_spectral_features(audio_window)
             for key, values in spectral_features.items():
-                for i, value in enumerate(values):
-                    features[f'{key}_{i}'] = float(value)
+                if isinstance(values, np.ndarray):
+                    for i, value in enumerate(values):
+                        features[f'{key}_{i}'] = float(value)
+                else:
+                    features[key] = float(values)
         
         return features
     

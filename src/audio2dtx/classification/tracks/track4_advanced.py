@@ -13,6 +13,7 @@ from sklearn.metrics import accuracy_score
 
 from ..base_classifier import BaseClassifier, ClassificationResult
 from ..feature_extractor import FeatureExtractor
+from ..base_track_mixin import BaseTrackMixin
 from ...config.settings import Settings
 from ...utils.exceptions import ClassificationError
 from ...utils.logging import get_logger
@@ -20,7 +21,7 @@ from ...utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-class AdvancedFeaturesTrack(BaseClassifier):
+class AdvancedFeaturesTrack(BaseClassifier, BaseTrackMixin):
     """
     Track 4: Advanced Spectral Features + Context Classification
     
@@ -425,18 +426,6 @@ class AdvancedFeaturesTrack(BaseClassifier):
             logger.error(f"Rule-based classification failed: {e}")
             return self._fallback_classification(audio_window)
     
-    def _calculate_velocity(self, audio_window: np.ndarray, features: Dict[str, Any]) -> float:
-        """Calculate velocity based on audio energy and features."""
-        try:
-            rms_energy = features.get('rms_energy', np.sqrt(np.mean(audio_window**2)))
-            peak_amplitude = features.get('peak_amplitude', np.max(np.abs(audio_window)))
-            
-            # Combine RMS and peak for velocity estimation
-            velocity = (rms_energy * 8 + peak_amplitude * 2) / 10
-            return float(np.clip(velocity, 0.1, 1.0))
-            
-        except Exception:
-            return 0.5
     
     def _simple_frequency_classify(self, audio_window: np.ndarray) -> int:
         """Simple frequency classification for training labels."""
@@ -469,35 +458,10 @@ class AdvancedFeaturesTrack(BaseClassifier):
         except Exception:
             return 2  # Default to kick
     
-    def _class_id_to_instrument(self, class_id: int) -> str:
-        """Convert class ID to instrument name."""
-        from ...config.constants import DRUM_CLASSES
-        return DRUM_CLASSES.get(class_id, 'kick')
     
     def _fallback_classification(self, audio_window: np.ndarray) -> ClassificationResult:
-        """Simple fallback classification."""
-        try:
-            class_id = self._simple_frequency_classify(audio_window)
-            instrument = self._class_id_to_instrument(class_id)
-            
-            # Calculate basic velocity
-            rms = np.sqrt(np.mean(audio_window**2))
-            velocity = min(1.0, max(0.1, rms * 10))
-            
-            return ClassificationResult(
-                instrument=instrument,
-                confidence=0.3,
-                velocity=velocity,
-                features={'source': 'fallback'}
-            )
-            
-        except Exception:
-            return ClassificationResult(
-                instrument='kick',
-                confidence=0.1,
-                velocity=0.5,
-                features={'source': 'error_fallback'}
-            )
+        """Simple fallback classification using mixin."""
+        return self._rule_based_fallback(audio_window)
     
     def get_info(self) -> Dict[str, Any]:
         """Get information about this track."""

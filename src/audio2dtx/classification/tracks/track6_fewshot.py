@@ -11,6 +11,7 @@ from collections import defaultdict
 
 from ..base_classifier import BaseClassifier, ClassificationResult
 from ..feature_extractor import FeatureExtractor
+from ..base_track_mixin import BaseTrackMixin
 from ...config.settings import Settings
 from ...utils.exceptions import ClassificationError
 from ...utils.logging import get_logger
@@ -18,7 +19,7 @@ from ...utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-class FewShotTrack(BaseClassifier):
+class FewShotTrack(BaseClassifier, BaseTrackMixin):
     """
     Track 6: Real-Time Few-Shot Learning
     
