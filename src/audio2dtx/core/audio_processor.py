@@ -15,6 +15,7 @@ from ..audio.analyzer import SpectralAnalyzer
 from .onset_detector import OnsetDetector
 from .beat_tracker import BeatTracker
 from ..classification.feature_extractor import FeatureExtractor
+from ..classification.track_manager import TrackManager
 from ..dtx.writer import DTXWriter, DTXChart
 from ..services.magenta_client import MagentaClient
 from ..utils.exceptions import ProcessingError, ValidationError
@@ -48,6 +49,7 @@ class AudioProcessor:
         self.onset_detector = OnsetDetector(self.settings)
         self.beat_tracker = BeatTracker(self.settings)
         self.feature_extractor = FeatureExtractor(self.settings)
+        self.track_manager = TrackManager(self.settings)
         self.dtx_writer = DTXWriter(self.settings)
         self.magenta_client = MagentaClient(self.settings)
         
@@ -160,29 +162,51 @@ class AudioProcessor:
         Returns:
             Dictionary mapping instrument IDs to onset times
         """
-        # Extract audio windows around onsets
-        window_size = int(0.1 * self.settings.audio.sample_rate)  # 100ms windows
-        onset_windows = []
-        
-        for onset_time in onset_times:
-            onset_sample = int(onset_time * self.settings.audio.sample_rate)
-            start_sample = max(0, onset_sample - window_size // 2)
-            end_sample = min(len(audio), onset_sample + window_size // 2)
+        try:
+            # Extract audio windows around onsets
+            window_size = int(0.1 * self.settings.audio.sample_rate)  # 100ms windows
+            onset_windows = []
             
-            window = audio[start_sample:end_sample]
-            # Pad if necessary
-            if len(window) < window_size:
-                padding = window_size - len(window)
-                window = np.pad(window, (0, padding), mode='constant')
+            for onset_time in onset_times:
+                onset_sample = int(onset_time * self.settings.audio.sample_rate)
+                start_sample = max(0, onset_sample - window_size // 2)
+                end_sample = min(len(audio), onset_sample + window_size // 2)
+                
+                window = audio[start_sample:end_sample]
+                # Pad if necessary
+                if len(window) < window_size:
+                    padding = window_size - len(window)
+                    window = np.pad(window, (0, padding), mode='constant')
+                
+                onset_windows.append((window, onset_time))
             
-            onset_windows.append((window, onset_time))
-        
-        # For now, use a simple fallback classification
-        # This will be replaced with actual track implementations in Phase 2
-        classified_onsets = self._fallback_classification(onset_windows)
-        
-        logger.info(f"Classified {len(onset_times)} onsets using {track_type} method")
-        return classified_onsets
+            # Prepare context for classification
+            context = {
+                'full_audio': audio,
+                'metadata': self.current_metadata,
+                'beat_times': getattr(self, 'beat_times', []),
+                'tempo_bpm': getattr(self, 'tempo_bpm', 120.0)
+            }
+            
+            # Use track manager for classification
+            if track_type == 'default':
+                # Use best track for genre
+                genre = self.current_metadata.get('genre', 'unknown') if self.current_metadata else 'unknown'
+                results = self.track_manager.classify_with_best_track(onset_windows, context, genre)
+            else:
+                # Use specific track
+                results = self.track_manager.classify_with_track(track_type, onset_windows, context)
+            
+            # Convert results to the expected format
+            classified_onsets = self._convert_results_to_legacy_format(results, onset_times)
+            
+            logger.info(f"Classified {len(onset_times)} onsets using {track_type} method")
+            return classified_onsets
+            
+        except Exception as e:
+            logger.error(f"Classification failed: {e}")
+            # Fall back to simple classification
+            return self._fallback_classification([(audio[int(ot * self.settings.audio.sample_rate):int(ot * self.settings.audio.sample_rate) + window_size], ot) for ot in onset_times])
     
     def _fallback_classification(self, 
                                onset_windows: List[Tuple[np.ndarray, float]]) -> Dict[int, List[float]]:
@@ -221,6 +245,36 @@ class AudioProcessor:
             classified[instrument_id].append(onset_time)
         
         return classified
+    
+    def _convert_results_to_legacy_format(self, 
+                                        results: List,
+                                        onset_times: np.ndarray) -> Dict[int, List[float]]:
+        """
+        Convert classification results to legacy format.
+        
+        Args:
+            results: List of ClassificationResult objects
+            onset_times: Array of onset times
+            
+        Returns:
+            Dictionary mapping instrument IDs to onset times
+        """
+        from ..config.constants import DRUM_CLASSES
+        
+        # Create reverse mapping
+        instrument_to_id = {v: k for k, v in DRUM_CLASSES.items()}
+        
+        # Initialize result dictionary
+        classified_onsets = {i: [] for i in range(10)}
+        
+        # Convert results
+        for i, result in enumerate(results):
+            if i < len(onset_times):
+                onset_time = onset_times[i]
+                instrument_id = instrument_to_id.get(result.instrument, 2)  # Default to kick
+                classified_onsets[instrument_id].append(onset_time)
+        
+        return classified_onsets
     
     def _generate_dtx_chart(self, 
                            classified_onsets: Dict[int, List[float]],

@@ -14,4 +14,5 @@
 - Améliorer l'architecture du code
 - Réfléchir à une méthode pour tester l'efficacité de la conversion
 - Tout réécrire en go
-- 
+- Est-ce réeelement utilse de simuler un output de magenta s'il n'est pas dispo ?
+- Est-ce utile de choisir les tracks en fonction du genre ? peut-être faut-il un mode où on les joue tous ?
