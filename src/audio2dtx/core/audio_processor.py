@@ -326,8 +326,12 @@ class AudioProcessor:
         Returns:
             Path to generated DTX file
         """
+        # Add detected BPM to metadata
+        metadata_with_bpm = metadata.copy()
+        metadata_with_bpm['bpm'] = beat_result.tempo_bpm
+        
         # Create DTX chart
-        chart = DTXChart(metadata=metadata, notes=[])
+        chart = DTXChart(metadata=metadata_with_bpm, notes=[])
         
         # Generate notes from onsets
         notes = self.dtx_writer.generate_notes_from_onsets(
@@ -350,7 +354,7 @@ class AudioProcessor:
         
         # Create BGM file with quantization offset
         bgm_offset = self.quantization_results.get('quantization_info', {}).get('bgm_offset', 0.0)
-        bgm_path = self._create_bgm_file(metadata, output_dir, safe_song_name, bgm_offset)
+        bgm_path = self._create_bgm_file(metadata_with_bpm, output_dir, safe_song_name, bgm_offset)
         
         # Create DTX package
         dtx_package_path = self.dtx_writer.create_complete_dtx_package(
@@ -393,7 +397,7 @@ class AudioProcessor:
             if use_original_bgm:
                 # Use original audio as BGM
                 bgm_audio = self.current_audio
-                bgm_filename = "bgm.mp3"
+                bgm_filename = "bgm.wav"
                 logger.info("Creating BGM from original audio")
             else:
                 # Create separated BGM (no drums)
@@ -401,7 +405,7 @@ class AudioProcessor:
                     self.current_audio, 
                     include_drums=False
                 )
-                bgm_filename = "bgm_separated.mp3"
+                bgm_filename = "bgm_separated.wav"
                 logger.info("Creating separated BGM (no drums)")
             
             # Apply BGM offset if needed
@@ -413,8 +417,8 @@ class AudioProcessor:
             temp_dir = os.path.join(output_dir, "temp")
             os.makedirs(temp_dir, exist_ok=True)
             
-            # Convert to MP3 format
-            bgm_path = self._convert_audio_to_mp3(
+            # Convert to WAV format (DTXMania works better with WAV)
+            bgm_path = self._convert_audio_to_wav(
                 bgm_audio, 
                 temp_dir, 
                 bgm_filename, 
@@ -538,6 +542,42 @@ class AudioProcessor:
             logger.warning(f"ffmpeg conversion failed: {e}")
             # Fall back to WAV format
             return self._convert_audio_to_wav_fallback(audio, output_dir, filename, sample_rate)
+    
+    def _convert_audio_to_wav(self, 
+                             audio: np.ndarray, 
+                             output_dir: str, 
+                             filename: str, 
+                             sample_rate: int) -> Optional[str]:
+        """
+        Convert audio to WAV format.
+        
+        Args:
+            audio: Audio data
+            output_dir: Output directory
+            filename: Output filename
+            sample_rate: Sample rate
+            
+        Returns:
+            Path to created WAV file
+        """
+        try:
+            import soundfile as sf
+            
+            # Ensure filename has .wav extension
+            if not filename.endswith('.wav'):
+                filename = filename.replace('.mp3', '.wav')
+            
+            wav_path = os.path.join(output_dir, filename)
+            
+            # Write WAV file with high quality settings
+            sf.write(wav_path, audio, sample_rate, subtype='PCM_16')
+            logger.info(f"Successfully created WAV file: {wav_path}")
+            
+            return wav_path
+            
+        except Exception as e:
+            logger.error(f"Failed to save WAV file: {e}")
+            return None
     
     def _convert_audio_to_wav_fallback(self, 
                                       audio: np.ndarray, 
