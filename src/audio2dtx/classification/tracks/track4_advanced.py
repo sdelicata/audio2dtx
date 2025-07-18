@@ -124,11 +124,26 @@ class AdvancedFeaturesTrack(BaseClassifier, BaseTrackMixin):
             # Handle NaN values
             X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
             
-            # Split data
+            # Check class distribution for stratification
+            unique_classes, class_counts = np.unique(y, return_counts=True)
+            min_class_count = np.min(class_counts)
+            can_stratify = min_class_count >= 2 and len(unique_classes) > 1
+            
+            logger.info(f"📊 Class distribution: {dict(zip(unique_classes, class_counts))}")
+            logger.info(f"🔍 Min class count: {min_class_count}, Can stratify: {can_stratify}")
+            
+            # Split data with conditional stratification
             if len(X) > self.min_training_samples:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=validation_split, random_state=42, stratify=y
-                )
+                if can_stratify:
+                    logger.info("✅ Using stratified split")
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X, y, test_size=validation_split, random_state=42, stratify=y
+                    )
+                else:
+                    logger.warning("⚠️ Using random split (insufficient samples per class for stratification)")
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X, y, test_size=validation_split, random_state=42
+                    )
             else:
                 X_train, X_test, y_train, y_test = X, X, y, y
             
