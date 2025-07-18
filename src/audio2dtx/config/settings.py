@@ -41,6 +41,19 @@ class DTXSettings:
 
 
 @dataclass
+class QuantizationSettings:
+    """Rhythmic quantization settings."""
+    enabled: bool = True
+    resolution: str = "sixteenth"  # quarter, eighth, sixteenth, thirty_second
+    magnetic_strength: float = 0.7  # 0.0 to 1.0, how strong the magnetic attraction is
+    magnetic_radius: float = 0.05  # seconds, radius of magnetic attraction
+    preserve_groove: bool = True  # preserve intentional timing variations
+    preserve_threshold: float = 0.1  # seconds, threshold for preserving variations
+    adjust_bgm_timing: bool = True  # allow BGM timing adjustment
+    bgm_adjustment_threshold: float = 0.025  # seconds, minimum adjustment needed
+
+
+@dataclass
 class ServiceSettings:
     """External service settings."""
     magenta_url: str = DEFAULT_MAGENTA_URL
@@ -64,6 +77,7 @@ class Settings:
     audio: AudioSettings = field(default_factory=AudioSettings)
     classification: ClassificationSettings = field(default_factory=ClassificationSettings)
     dtx: DTXSettings = field(default_factory=DTXSettings)
+    quantization: QuantizationSettings = field(default_factory=QuantizationSettings)
     services: ServiceSettings = field(default_factory=ServiceSettings)
     processing: ProcessingSettings = field(default_factory=ProcessingSettings)
     
@@ -121,6 +135,11 @@ class Settings:
         if 'dtx' in config_data:
             dtx_data = config_data['dtx']
             settings.dtx = DTXSettings(**dtx_data)
+        
+        # Update quantization settings
+        if 'quantization' in config_data:
+            quantization_data = config_data['quantization']
+            settings.quantization = QuantizationSettings(**quantization_data)
         
         # Update service settings
         if 'services' in config_data:
@@ -188,6 +207,16 @@ class Settings:
                 'resolution': self.dtx.resolution,
                 'bars_before_song': self.dtx.bars_before_song,
                 'max_bars': self.dtx.max_bars
+            },
+            'quantization': {
+                'enabled': self.quantization.enabled,
+                'resolution': self.quantization.resolution,
+                'magnetic_strength': self.quantization.magnetic_strength,
+                'magnetic_radius': self.quantization.magnetic_radius,
+                'preserve_groove': self.quantization.preserve_groove,
+                'preserve_threshold': self.quantization.preserve_threshold,
+                'adjust_bgm_timing': self.quantization.adjust_bgm_timing,
+                'bgm_adjustment_threshold': self.quantization.bgm_adjustment_threshold
             },
             'services': {
                 'magenta_url': self.services.magenta_url,

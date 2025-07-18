@@ -57,6 +57,7 @@ class AudioProcessor:
         self.current_audio = None
         self.current_metadata = None
         self.processing_results = {}
+        self.quantization_results = {}
         
     def process_audio_file(self, 
                           input_file: str,
@@ -84,7 +85,7 @@ class AudioProcessor:
         metadata = validate_metadata(metadata)
         
         # Initialize progress tracking
-        total_steps = 8
+        total_steps = 9
         progress = ProgressLogger(logger, total_steps, "Audio Processing")
         
         try:
@@ -117,10 +118,19 @@ class AudioProcessor:
                 onset_results, method='union'
             )
             
+            # Step 6.5: Apply magnetic quantization
+            progress.step("Applying magnetic quantization")
+            quantized_onsets, adjusted_beat_times, quantization_info = self.beat_tracker.apply_magnetic_quantization(
+                fused_onsets, beat_result.beat_times, beat_result.tempo_bpm
+            )
+            
+            # Update beat result with adjusted times
+            beat_result.beat_times = adjusted_beat_times
+            
             # Step 7: Classify onsets
             progress.step("Classifying drum instruments")
             classified_onsets = self._classify_onsets(
-                drum_audio, fused_onsets, track_type
+                drum_audio, quantized_onsets, track_type
             )
             
             # Step 8: Generate DTX
@@ -139,6 +149,13 @@ class AudioProcessor:
                 'fusion_info': fusion_info,
                 'classified_count': len(classified_onsets),
                 'output_file': dtx_path
+            }
+            
+            # Store quantization results
+            self.quantization_results = {
+                'original_onsets': len(fused_onsets),
+                'quantized_onsets': len(quantized_onsets),
+                'quantization_info': quantization_info
             }
             
             return dtx_path
@@ -331,8 +348,9 @@ class AudioProcessor:
         song_name = metadata.get('title', 'song')
         safe_song_name = "".join(c for c in song_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
         
-        # Create BGM file
-        bgm_path = self._create_bgm_file(metadata, output_dir, safe_song_name)
+        # Create BGM file with quantization offset
+        bgm_offset = self.quantization_results.get('quantization_info', {}).get('bgm_offset', 0.0)
+        bgm_path = self._create_bgm_file(metadata, output_dir, safe_song_name, bgm_offset)
         
         # Create DTX package
         dtx_package_path = self.dtx_writer.create_complete_dtx_package(
@@ -348,7 +366,8 @@ class AudioProcessor:
     def _create_bgm_file(self, 
                         metadata: Dict[str, Any], 
                         output_dir: str,
-                        safe_song_name: str) -> Optional[str]:
+                        safe_song_name: str,
+                        bgm_offset: float = 0.0) -> Optional[str]:
         """
         Create BGM file for DTX package.
         
@@ -356,6 +375,7 @@ class AudioProcessor:
             metadata: Song metadata
             output_dir: Output directory
             safe_song_name: Safe filename for the song
+            bgm_offset: BGM timing offset in seconds
             
         Returns:
             Path to created BGM file or None if creation failed
@@ -383,6 +403,11 @@ class AudioProcessor:
                 )
                 bgm_filename = "bgm_separated.mp3"
                 logger.info("Creating separated BGM (no drums)")
+            
+            # Apply BGM offset if needed
+            if abs(bgm_offset) > 0.001:
+                bgm_audio = self._apply_bgm_offset(bgm_audio, bgm_offset)
+                logger.info(f"Applied BGM offset: {bgm_offset:.3f}s")
             
             # Create temporary BGM file
             temp_dir = os.path.join(output_dir, "temp")
@@ -554,7 +579,9 @@ class AudioProcessor:
         Returns:
             Dictionary with processing results
         """
-        return self.processing_results.copy()
+        results = self.processing_results.copy()
+        results['quantization'] = self.quantization_results.copy()
+        return results
     
     def get_component_info(self) -> Dict[str, Any]:
         """
@@ -624,3 +651,36 @@ class AudioProcessor:
         self.current_audio = None
         self.current_metadata = None
         self.processing_results.clear()
+        self.quantization_results.clear()
+    
+    def _apply_bgm_offset(self, audio: np.ndarray, offset: float) -> np.ndarray:
+        """
+        Apply timing offset to audio signal.
+        
+        Args:
+            audio: Input audio signal
+            offset: Offset in seconds (positive = add silence at start, negative = trim start)
+            
+        Returns:
+            Audio with applied offset
+        """
+        if abs(offset) < 0.001:
+            return audio
+        
+        sample_rate = self.settings.audio.sample_rate
+        offset_samples = int(offset * sample_rate)
+        
+        if offset_samples > 0:
+            # Add silence at the beginning
+            silence = np.zeros(offset_samples, dtype=audio.dtype)
+            adjusted_audio = np.concatenate([silence, audio])
+        else:
+            # Trim from the beginning
+            trim_samples = abs(offset_samples)
+            if trim_samples < len(audio):
+                adjusted_audio = audio[trim_samples:]
+            else:
+                # If trim is longer than audio, return minimal audio
+                adjusted_audio = audio[-1000:] if len(audio) > 1000 else audio
+        
+        return adjusted_audio

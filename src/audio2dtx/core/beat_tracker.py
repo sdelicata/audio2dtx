@@ -210,6 +210,7 @@ class BeatTracker:
             LibrosaBeatTracker(settings),
             AdaptiveBeatTracker(settings)
         ]
+        self.quantizer = GridQuantizer(settings)
         
     def track_beats(self, audio: np.ndarray, method: str = "best") -> BeatTrackingResult:
         """
@@ -371,3 +372,328 @@ class BeatTracker:
         bar_times = beat_times[bar_positions]
         
         return bar_positions, bar_times
+    
+    def apply_magnetic_quantization(self,
+                                   onset_times: np.ndarray,
+                                   beat_times: np.ndarray,
+                                   tempo_bpm: float) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+        """
+        Apply magnetic quantization to onsets and calculate BGM offset.
+        
+        Args:
+            onset_times: Original onset times
+            beat_times: Beat times
+            tempo_bpm: Tempo in BPM
+            
+        Returns:
+            Tuple of (quantized_onsets, adjusted_beat_times, quantization_info)
+        """
+        # Apply magnetic quantization to onsets
+        quantized_onsets, quantization_info = self.quantizer.quantize_onsets_magnetic(
+            onset_times, beat_times, tempo_bpm
+        )
+        
+        # Calculate BGM offset
+        bgm_offset, offset_info = self.quantizer.calculate_bgm_offset(
+            onset_times, quantized_onsets, beat_times
+        )
+        
+        # Apply BGM offset to beat times
+        adjusted_beat_times = self.quantizer.apply_quantization_to_beat_times(
+            beat_times, bgm_offset
+        )
+        
+        # Combine quantization info
+        combined_info = {
+            **quantization_info,
+            'bgm_offset': bgm_offset,
+            'offset_info': offset_info
+        }
+        
+        return quantized_onsets, adjusted_beat_times, combined_info
+
+
+class GridQuantizer:
+    """
+    Advanced rhythmic quantization with magnetic attraction to grid positions.
+    
+    This class implements intelligent quantization that can:
+    - Snap onsets to musical grid positions with configurable precision
+    - Preserve intentional timing variations (groove)
+    - Calculate optimal BGM timing adjustments
+    - Support multiple quantization resolutions
+    """
+    
+    def __init__(self, settings: Settings):
+        """
+        Initialize the GridQuantizer.
+        
+        Args:
+            settings: Application settings containing quantization parameters
+        """
+        self.settings = settings
+        self.quantization = settings.quantization
+        
+        # Resolution mapping to subdivisions per beat
+        self.resolution_map = {
+            'quarter': 1,      # Quarter note (1/4)
+            'eighth': 2,       # Eighth note (1/8)
+            'sixteenth': 4,    # Sixteenth note (1/16) - recommended for drums
+            'thirty_second': 8 # Thirty-second note (1/32)
+        }
+        
+        self.subdivision = self.resolution_map.get(self.quantization.resolution, 4)
+        
+    def quantize_onsets_magnetic(self, 
+                                onset_times: np.ndarray,
+                                beat_times: np.ndarray,
+                                tempo_bpm: float) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """
+        Apply magnetic quantization to onset times.
+        
+        Args:
+            onset_times: Original onset times in seconds
+            beat_times: Beat positions in seconds
+            tempo_bpm: Tempo in BPM
+            
+        Returns:
+            Tuple of (quantized_onset_times, quantization_info)
+        """
+        if not self.quantization.enabled or len(beat_times) < 2:
+            return onset_times, {'method': 'disabled', 'adjustments': 0}
+        
+        # Calculate grid timing
+        beat_interval = np.mean(np.diff(beat_times))
+        grid_interval = beat_interval / self.subdivision
+        
+        quantized_onsets = []
+        adjustments = []
+        preserved_count = 0
+        
+        for onset_time in onset_times:
+            # Find closest grid position
+            grid_pos, distance = self._find_closest_grid_position(
+                onset_time, beat_times, grid_interval
+            )
+            
+            # Decide whether to quantize based on distance and settings
+            if self._should_quantize_onset(distance):
+                # Apply magnetic attraction
+                quantized_time = self._apply_magnetic_attraction(
+                    onset_time, grid_pos, distance
+                )
+                quantized_onsets.append(quantized_time)
+                adjustments.append(quantized_time - onset_time)
+            else:
+                # Preserve original timing
+                quantized_onsets.append(onset_time)
+                adjustments.append(0.0)
+                preserved_count += 1
+        
+        quantized_onsets = np.array(quantized_onsets)
+        
+        # Calculate quantization statistics
+        abs_adjustments = np.abs(adjustments)
+        quantization_info = {
+            'method': 'magnetic',
+            'resolution': self.quantization.resolution,
+            'subdivision': self.subdivision,
+            'adjustments': len([a for a in adjustments if abs(a) > 0.001]),
+            'preserved': preserved_count,
+            'total_onsets': len(onset_times),
+            'avg_adjustment': np.mean(abs_adjustments) if len(abs_adjustments) > 0 else 0.0,
+            'max_adjustment': np.max(abs_adjustments) if len(abs_adjustments) > 0 else 0.0
+        }
+        
+        logger.info(f"Magnetic quantization: {quantization_info['adjustments']}/{quantization_info['total_onsets']} onsets quantized, "
+                   f"{preserved_count} preserved")
+        
+        return quantized_onsets, quantization_info
+    
+    def _find_closest_grid_position(self, 
+                                   onset_time: float,
+                                   beat_times: np.ndarray,
+                                   grid_interval: float) -> Tuple[float, float]:
+        """
+        Find the closest grid position to an onset time.
+        
+        Args:
+            onset_time: Time of the onset
+            beat_times: Array of beat times
+            grid_interval: Time between grid positions
+            
+        Returns:
+            Tuple of (grid_position_time, distance_to_grid)
+        """
+        # Find the beat before this onset
+        beat_before_indices = np.where(beat_times <= onset_time)[0]
+        if len(beat_before_indices) == 0:
+            # Before first beat, use first beat as reference
+            beat_before_time = beat_times[0]
+            beat_before_idx = 0
+        else:
+            beat_before_idx = beat_before_indices[-1]
+            beat_before_time = beat_times[beat_before_idx]
+        
+        # Calculate position within the beat
+        position_in_beat = onset_time - beat_before_time
+        
+        # Find closest grid position
+        grid_positions = np.arange(0, beat_times[1] - beat_times[0] if len(beat_times) > 1 else 1.0, grid_interval)
+        
+        # Include the next beat position as well
+        if len(beat_times) > beat_before_idx + 1:
+            next_beat_time = beat_times[beat_before_idx + 1]
+            next_beat_position = next_beat_time - beat_before_time
+            grid_positions = np.append(grid_positions, next_beat_position)
+        
+        # Find closest grid position
+        distances = np.abs(grid_positions - position_in_beat)
+        closest_idx = np.argmin(distances)
+        
+        closest_grid_position = beat_before_time + grid_positions[closest_idx]
+        distance = distances[closest_idx]
+        
+        return closest_grid_position, distance
+    
+    def _should_quantize_onset(self, distance: float) -> bool:
+        """
+        Determine whether an onset should be quantized based on distance to grid.
+        
+        Args:
+            distance: Distance to closest grid position in seconds
+            
+        Returns:
+            True if onset should be quantized
+        """
+        # Always quantize if within magnetic radius
+        if distance <= self.quantization.magnetic_radius:
+            return True
+        
+        # Don't quantize if preserve_groove is enabled and distance is large
+        if self.quantization.preserve_groove and distance > self.quantization.preserve_threshold:
+            return False
+        
+        return True
+    
+    def _apply_magnetic_attraction(self, 
+                                  onset_time: float,
+                                  grid_position: float,
+                                  distance: float) -> float:
+        """
+        Apply magnetic attraction to pull onset toward grid position.
+        
+        Args:
+            onset_time: Original onset time
+            grid_position: Target grid position
+            distance: Distance to grid position
+            
+        Returns:
+            Quantized onset time
+        """
+        # Calculate attraction strength based on distance
+        if distance <= self.quantization.magnetic_radius:
+            # Strong attraction within magnetic radius
+            strength = self.quantization.magnetic_strength
+        else:
+            # Weaker attraction outside radius
+            strength = self.quantization.magnetic_strength * 0.5
+        
+        # Apply attraction
+        attraction = (grid_position - onset_time) * strength
+        quantized_time = onset_time + attraction
+        
+        return quantized_time
+    
+    def calculate_bgm_offset(self, 
+                           original_onsets: np.ndarray,
+                           quantized_onsets: np.ndarray,
+                           beat_times: np.ndarray) -> Tuple[float, Dict[str, Any]]:
+        """
+        Calculate optimal BGM timing offset to maintain synchronization.
+        
+        Args:
+            original_onsets: Original onset times
+            quantized_onsets: Quantized onset times
+            beat_times: Beat times
+            
+        Returns:
+            Tuple of (bgm_offset_seconds, offset_info)
+        """
+        if not self.quantization.adjust_bgm_timing:
+            return 0.0, {'method': 'disabled', 'offset': 0.0}
+        
+        # Calculate the adjustments made to onsets
+        adjustments = quantized_onsets - original_onsets
+        
+        # Filter out very small adjustments
+        significant_adjustments = adjustments[np.abs(adjustments) > 0.001]
+        
+        if len(significant_adjustments) == 0:
+            return 0.0, {'method': 'no_adjustments', 'offset': 0.0}
+        
+        # Calculate average adjustment
+        avg_adjustment = np.mean(significant_adjustments)
+        
+        # Only apply BGM offset if the average adjustment is significant
+        if abs(avg_adjustment) < self.quantization.bgm_adjustment_threshold:
+            return 0.0, {'method': 'below_threshold', 'offset': 0.0, 'avg_adjustment': avg_adjustment}
+        
+        # The BGM offset should be the negative of the average adjustment
+        # to maintain synchronization
+        bgm_offset = -avg_adjustment
+        
+        offset_info = {
+            'method': 'calculated',
+            'offset': bgm_offset,
+            'avg_adjustment': avg_adjustment,
+            'significant_adjustments': len(significant_adjustments),
+            'total_onsets': len(original_onsets)
+        }
+        
+        logger.info(f"BGM offset calculated: {bgm_offset:.3f}s (avg adjustment: {avg_adjustment:.3f}s)")
+        
+        return bgm_offset, offset_info
+    
+    def apply_quantization_to_beat_times(self, 
+                                       beat_times: np.ndarray,
+                                       bgm_offset: float) -> np.ndarray:
+        """
+        Apply BGM offset to beat times.
+        
+        Args:
+            beat_times: Original beat times
+            bgm_offset: BGM timing offset in seconds
+            
+        Returns:
+            Adjusted beat times
+        """
+        if abs(bgm_offset) < 0.001:
+            return beat_times
+        
+        # Apply offset to all beat times
+        adjusted_beat_times = beat_times + bgm_offset
+        
+        # Ensure no negative beat times
+        adjusted_beat_times = np.maximum(adjusted_beat_times, 0.0)
+        
+        return adjusted_beat_times
+    
+    def get_quantization_stats(self) -> Dict[str, Any]:
+        """
+        Get current quantization settings and statistics.
+        
+        Returns:
+            Dictionary with quantization information
+        """
+        return {
+            'enabled': self.quantization.enabled,
+            'resolution': self.quantization.resolution,
+            'subdivision': self.subdivision,
+            'magnetic_strength': self.quantization.magnetic_strength,
+            'magnetic_radius': self.quantization.magnetic_radius,
+            'preserve_groove': self.quantization.preserve_groove,
+            'preserve_threshold': self.quantization.preserve_threshold,
+            'adjust_bgm_timing': self.quantization.adjust_bgm_timing,
+            'bgm_adjustment_threshold': self.quantization.bgm_adjustment_threshold
+        }
