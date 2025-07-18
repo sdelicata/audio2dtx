@@ -3,6 +3,7 @@ Main audio processor that orchestrates the entire conversion pipeline.
 """
 
 import os
+import shutil
 import numpy as np
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
@@ -58,6 +59,7 @@ class AudioProcessor:
         self.current_metadata = None
         self.processing_results = {}
         self.quantization_results = {}
+        self.temp_directories = []  # Track temporary directories for cleanup
         
     def process_audio_file(self, 
                           input_file: str,
@@ -417,6 +419,10 @@ class AudioProcessor:
             temp_dir = os.path.join(output_dir, "temp")
             os.makedirs(temp_dir, exist_ok=True)
             
+            # Track this temp directory for cleanup
+            if temp_dir not in self.temp_directories:
+                self.temp_directories.append(temp_dir)
+            
             # Convert to WAV format (DTXMania works better with WAV)
             bgm_path = self._convert_audio_to_wav(
                 bgm_audio, 
@@ -684,10 +690,22 @@ class AudioProcessor:
         return test_results
     
     def cleanup(self):
-        """Clean up resources."""
+        """Clean up resources and temporary directories."""
+        # Clear component caches
         if hasattr(self.feature_extractor, 'clear_cache'):
             self.feature_extractor.clear_cache()
         
+        # Clean up temporary directories
+        for temp_dir in self.temp_directories:
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    logger.info(f"Cleaned up temporary directory: {temp_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up temporary directory {temp_dir}: {e}")
+        
+        # Clear tracking lists and processing state
+        self.temp_directories.clear()
         self.current_audio = None
         self.current_metadata = None
         self.processing_results.clear()
