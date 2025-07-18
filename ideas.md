@@ -1,9 +1,10 @@
 # Bugs à corriger
 
+- toujours pas d'audio
 - simplifier la génération du bgm, ffmpeg était suffisant
-- nettoyer le dossier output/tmp après la conversion
+- nettoyer le dossier output/temp après la conversion
 - corriger la track ML
-- implémenter une sorte de magnétisme pour que les notes soient calées sur la grille. si besoin déplacer légèrement le déclenchement du bgm
+- implémenter une sorte de magnétisme pour que les notes soient calées sur la grille. si besoin déplacer légèrement le déclenchement du bgm => fonctionne pas
 
 # Idées pour de nouvelles fonctionalités
 

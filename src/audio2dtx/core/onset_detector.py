@@ -224,19 +224,42 @@ class MLOnsetDetector(BaseOnsetDetector):
                 # Truncate to fit complete chunks
                 mel_spec_padded = mel_spec_norm[:, :n_chunks*4]
             
-            # Reshape to (n_chunks, 128, 4) and add batch dimension
-            model_input = mel_spec_padded.T.reshape(n_chunks, 128, 4)[np.newaxis, :, :, :]
+            # Reshape to (n_chunks, 128, 4) - model expects this format
+            # mel_spec_padded shape: (128, n_chunks*4)
+            # We need to reshape to: (n_chunks, 128, 4)
+            model_input = mel_spec_padded.reshape(128, n_chunks, 4).transpose(1, 0, 2)
             
-            # Get predictions
-            predictions = self.model.predict(model_input, verbose=0)
+            
+            # Get predictions - process in smaller batches if needed
+            if n_chunks > 500:  # Process in batches to avoid memory issues
+                predictions = []
+                batch_size = 100
+                for i in range(0, n_chunks, batch_size):
+                    batch_end = min(i + batch_size, n_chunks)
+                    batch_input = model_input[i:batch_end]
+                    batch_pred = self.model.predict(batch_input, verbose=0)
+                    predictions.append(batch_pred)
+                predictions = np.concatenate(predictions, axis=0)
+            else:
+                predictions = self.model.predict(model_input, verbose=0)
             
             # Handle predictions based on output shape
             if len(predictions.shape) == 3:
-                # Model outputs (batch, time, features)
-                onset_probs = predictions[0, :, 0]  # Take first batch and first feature
+                # Model outputs (time, batch, features) or (batch, time, features)
+                if predictions.shape[0] == n_chunks:
+                    # (time, batch, features) format - take first feature
+                    onset_probs = predictions[:, 0, 0] if predictions.shape[2] > 0 else predictions[:, 0]
+                else:
+                    # (batch, time, features) format - take first feature  
+                    onset_probs = predictions[0, :, 0] if predictions.shape[2] > 0 else predictions[0, :]
             elif len(predictions.shape) == 2:
-                # Model outputs (batch, time)
-                onset_probs = predictions[0, :]  # Take first batch
+                # Model outputs (time, features) or (batch, time)
+                if predictions.shape[0] == n_chunks:
+                    # (time, features) format - take first feature
+                    onset_probs = predictions[:, 0] if predictions.shape[1] > 0 else predictions[:, 0]
+                else:
+                    # (batch, time) format - take first batch
+                    onset_probs = predictions[0, :]
             else:
                 # Fallback: flatten predictions
                 onset_probs = predictions.flatten()
