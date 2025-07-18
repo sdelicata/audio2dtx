@@ -9,3 +9,4 @@ pandas==1.5.3
 spleeter==2.4.2
 scikit-learn==1.2.2
 requests==2.31.0
+PyYAML==6.0.1

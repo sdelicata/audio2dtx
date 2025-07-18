@@ -3,9 +3,9 @@ Configuration management system.
 """
 
 from .settings import Settings
-from .constants import Constants
+from . import constants
 
 __all__ = [
     "Settings",
-    "Constants",
+    "constants",
 ]

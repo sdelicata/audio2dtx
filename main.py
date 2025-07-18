@@ -2,11 +2,19 @@ import sys
 import os
 import logging
 import argparse
-from audio_to_chart import AudioToChart
+
+# Add src to Python path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
+from audio2dtx.config.settings import load_settings
+from audio2dtx.core.audio_processor import AudioProcessor
+from audio2dtx.utils.logging import setup_logging
+from audio2dtx.utils.validators import validate_audio_file, validate_metadata
+from audio2dtx.utils.exceptions import Audio2DTXError
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+setup_logging(level="INFO")
+logger = logging.getLogger('audio2dtx.main')
 
 def is_interactive_environment():
     """Check if we're running in an interactive environment"""
@@ -160,6 +168,25 @@ def collect_metadata(input_filename, args=None):
     
     return metadata
 
+def determine_track_type(args):
+    """Determine track type from command line arguments."""
+    if args.use_magenta_only:
+        return 'magenta_only'
+    elif args.use_advanced_features:
+        return 'advanced_features'
+    elif args.use_multi_scale:
+        return 'multi_scale'
+    elif args.use_few_shot:
+        return 'few_shot'
+    elif args.use_ensemble:
+        return 'ensemble'
+    elif args.use_augmentation:
+        return 'augmentation'
+    elif args.use_rock_ultimate:
+        return 'rock_ultimate'
+    else:
+        return 'default'
+
 def main():
     """Main entry point for audio to DTX conversion"""
     parser = argparse.ArgumentParser(description='Convert audio files to DTXMania charts')
@@ -273,32 +300,72 @@ def main():
         else:
             metadata = collect_metadata(input_filename, args)
         
-        # Create chart converter instance with metadata
-        use_magenta_only = args.use_magenta_only if args else False
-        use_advanced_features = args.use_advanced_features if args else False
-        use_multi_scale = args.use_multi_scale if args else False
-        use_few_shot = args.use_few_shot if args else False
-        use_ensemble = args.use_ensemble if args else False
-        use_augmentation = args.use_augmentation if args else False
-        use_rock_ultimate = args.use_rock_ultimate if args else False
-        chart = AudioToChart(input_audio, metadata, use_magenta_only=use_magenta_only, use_advanced_features=use_advanced_features, use_multi_scale=use_multi_scale, use_few_shot=use_few_shot, use_ensemble=use_ensemble, use_augmentation=use_augmentation, use_rock_ultimate=use_rock_ultimate)
+        # Override with command line arguments if provided
+        if args:
+            if args.title:
+                metadata['title'] = args.title
+            if args.artist:
+                metadata['artist'] = args.artist
+            if args.author:
+                metadata['author'] = args.author
+            if args.genre:
+                metadata['genre'] = args.genre
+            if args.comment:
+                metadata['comment'] = args.comment
+            if args.use_original_bgm is not None:
+                metadata['use_original_bgm'] = args.use_original_bgm
+            if args.no_original_bgm is not None:
+                metadata['use_original_bgm'] = not args.no_original_bgm
+            if args.time_signature:
+                metadata['time_signature'] = args.time_signature
         
-        # Extract beats from audio
-        logger.info("Extracting beats and creating chart...")
-        chart.extract_beats()
+        # Validate inputs
+        input_audio = validate_audio_file(input_audio)
+        metadata = validate_metadata(metadata)
         
-        # Create DTX chart
-        chart.create_chart()
+        # Load settings and initialize processor
+        settings = load_settings()
+        processor = AudioProcessor(settings)
         
-        # Export complete simfile
-        chart.export(output_dir)
+        # Determine track type
+        track_type = determine_track_type(args) if args else 'default'
+        
+        logger.info(f"🎯 Using track type: {track_type}")
+        
+        # Process audio file
+        dtx_path = processor.process_audio_file(
+            input_file=input_audio,
+            output_dir=output_dir,
+            metadata=metadata,
+            track_type=track_type
+        )
+        
+        # Get processing results
+        results = processor.get_processing_results()
         
         logger.info(f"✅ Successfully converted {input_filename} to DTXMania simfile")
-        logger.info(f"📁 Output saved to: {output_dir}")
+        logger.info(f"📁 Output saved to: {dtx_path}")
         
+        # Safely access beat_result attributes
+        beat_result = results.get('beat_result')
+        if beat_result and hasattr(beat_result, 'tempo_bpm'):
+            logger.info(f"🎵 Tempo: {beat_result.tempo_bpm} BPM")
+        else:
+            logger.info(f"🎵 Tempo: Unknown BPM")
+            
+        logger.info(f"🥁 Onsets detected: {results.get('onset_count', 0)}")
+        logger.info(f"🎶 Notes generated: {results.get('classified_count', 0)}")
+        
+    except Audio2DTXError as e:
+        logger.error(f"❌ Audio2DTX Error: {str(e)}")
+        sys.exit(1)
     except Exception as e:
         logger.error(f"❌ Error processing audio file: {str(e)}")
         sys.exit(1)
+    finally:
+        # Clean up if processor exists
+        if 'processor' in locals():
+            processor.cleanup()
 
 if __name__ == "__main__":
     main()

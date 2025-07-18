@@ -11,7 +11,8 @@ services:
     environment:
       - MAGENTA_SERVICE_URL=http://magenta-service:5000
     depends_on:
-      - magenta-service
+      magenta-service:
+        condition: service_healthy
     networks:
       - audio2dtx-network
     stdin_open: true
@@ -41,8 +42,3 @@ services:
 networks:
   audio2dtx-network:
     driver: bridge
-
-# Optional volumes for persistent model storage
-volumes:
-  magenta-models:
-    driver: local
