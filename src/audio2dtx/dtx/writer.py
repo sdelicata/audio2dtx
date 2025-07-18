@@ -63,12 +63,13 @@ class DTXWriter:
         self.resolution = settings.dtx.resolution
         self.bars_before_song = settings.dtx.bars_before_song
         
-    def create_dtx_header(self, metadata: Dict[str, Any]) -> str:
+    def create_dtx_header(self, metadata: Dict[str, Any], bgm_format: str = "mp3") -> str:
         """
         Create DTX file header with metadata.
         
         Args:
             metadata: Song metadata
+            bgm_format: Format of BGM file (mp3 or wav)
             
         Returns:
             DTX header string
@@ -93,20 +94,20 @@ class DTXWriter:
 """
         
         # Add WAV definitions for drum sounds
-        wav_definitions = self._create_wav_definitions(use_original_bgm)
+        wav_definitions = self._create_wav_definitions(use_original_bgm, bgm_format)
         header += wav_definitions + "\n"
         
         return header
     
-    def _create_wav_definitions(self, use_original_bgm: bool = True) -> str:
+    def _create_wav_definitions(self, use_original_bgm: bool = True, bgm_format: str = "mp3") -> str:
         """Create WAV file definitions for DTX."""
         definitions = []
         
-        # BGM definition
+        # BGM definition - prefer MP3 format for smaller file sizes, fallback to WAV
         if use_original_bgm:
-            definitions.append("#WAV01: bgm.mp3")
+            definitions.append(f"#WAV01: bgm.{bgm_format}")
         else:
-            definitions.append("#WAV01: bgm_separated.mp3")
+            definitions.append(f"#WAV01: bgm_separated.{bgm_format}")
         
         # Drum sound definitions
         drum_wavs = {
@@ -148,14 +149,20 @@ class DTXWriter:
             logger.warning("No beat times available for note generation")
             return notes
         
+        # Debug: log input data
+        total_input_onsets = sum(len(times) for times in onset_data.values())
+        logger.info(f"Processing {total_input_onsets} input onsets from {len(onset_data)} instruments")
+        
         # Calculate bar duration (4 beats per bar)
         bar_duration = 240.0 / tempo_bpm  # 4 beats in seconds
         
         for instrument_id, onset_times in onset_data.items():
             if instrument_id not in INT_TO_CHANNEL:
+                logger.warning(f"Unknown instrument ID: {instrument_id}, skipping")
                 continue
                 
             channel = INT_TO_CHANNEL[instrument_id]
+            logger.debug(f"Processing {len(onset_times)} onsets for instrument {instrument_id} (channel {channel})")
             
             for onset_time in onset_times:
                 # Convert onset time to bar and position
@@ -184,13 +191,15 @@ class DTXWriter:
     
     def write_dtx_content(self, 
                          chart: DTXChart,
-                         output_path: str) -> None:
+                         output_path: str,
+                         bgm_format: str = "mp3") -> None:
         """
         Write DTX chart to file.
         
         Args:
             chart: DTX chart data
             output_path: Output file path
+            bgm_format: Format of BGM file (mp3 or wav)
             
         Raises:
             DTXGenerationError: If writing fails
@@ -198,7 +207,7 @@ class DTXWriter:
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 # Write header
-                header = self.create_dtx_header(chart.metadata)
+                header = self.create_dtx_header(chart.metadata, bgm_format)
                 f.write(header)
                 
                 # Organize notes by bar and channel
@@ -240,7 +249,7 @@ class DTXWriter:
                                    output_dir: str,
                                    song_name: str) -> str:
         """
-        Create complete DTX package with all required files.
+        Create complete DTX package with all required files in directory structure.
         
         Args:
             chart: DTX chart data
@@ -250,80 +259,110 @@ class DTXWriter:
             song_name: Base name for the song
             
         Returns:
-            Path to created ZIP file
+            Path to created directory
             
         Raises:
             DTXGenerationError: If package creation fails
         """
         try:
-            os.makedirs(output_dir, exist_ok=True)
+            # Create song directory
+            song_dir = os.path.join(output_dir, song_name)
+            os.makedirs(song_dir, exist_ok=True)
             
-            # Create DTX file
-            dtx_path = os.path.join(output_dir, f"{song_name}.dtx")
-            self.write_dtx_content(chart, dtx_path)
+            # Determine BGM format first
+            bgm_format = "mp3"  # Default to MP3
+            if bgm_audio_path and os.path.exists(bgm_audio_path):
+                if bgm_audio_path.endswith('.wav'):
+                    bgm_format = "wav"
             
-            # Create ZIP package
-            zip_path = os.path.join(output_dir, f"{song_name}.zip")
+            # Create DTX file in the song directory
+            dtx_path = os.path.join(song_dir, f"{song_name}.dtx")
+            self.write_dtx_content(chart, dtx_path, bgm_format)
             
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # Add DTX file
-                zipf.write(dtx_path, f"{song_name}.dtx")
-                
-                # Add BGM file
-                if bgm_audio_path and os.path.exists(bgm_audio_path):
+            # Copy BGM file
+            if bgm_audio_path and os.path.exists(bgm_audio_path):
+                # Determine BGM filename based on detected format
+                if bgm_format == "wav":
+                    bgm_name = "bgm.wav" if chart.metadata.get('use_original_bgm', True) else "bgm_separated.wav"
+                else:
                     bgm_name = "bgm.mp3" if chart.metadata.get('use_original_bgm', True) else "bgm_separated.mp3"
-                    zipf.write(bgm_audio_path, bgm_name)
-                    logger.info(f"Added BGM file: {bgm_name}")
                 
-                # Add drum sounds
-                if drum_sounds_dir and os.path.exists(drum_sounds_dir):
-                    drum_files = [
-                        'hihat_close.ogg', 'snare.ogg', 'kick.ogg',
-                        'tom_high.ogg', 'tom_low.ogg', 'ride.ogg',
-                        'tom_floor.ogg', 'hihat_open.ogg', 'ride_bell.ogg', 'crash.ogg'
-                    ]
-                    
-                    for drum_file in drum_files:
-                        drum_path = os.path.join(drum_sounds_dir, drum_file)
-                        if os.path.exists(drum_path):
-                            zipf.write(drum_path, drum_file)
-                        else:
-                            logger.warning(f"Drum sound file not found: {drum_path}")
+                bgm_dest_path = os.path.join(song_dir, bgm_name)
                 
-                # Add template files if available
-                self._add_template_files(zipf, song_name)
+                import shutil
+                shutil.copy2(bgm_audio_path, bgm_dest_path)
+                logger.info(f"Added BGM file: {bgm_name}")
             
-            # Clean up temporary DTX file
-            if os.path.exists(dtx_path):
-                os.remove(dtx_path)
+            # Copy drum sounds
+            if drum_sounds_dir and os.path.exists(drum_sounds_dir):
+                drum_files = [
+                    'hihat_close.ogg', 'snare.ogg', 'kick.ogg',
+                    'tom_high.ogg', 'tom_low.ogg', 'ride.ogg',
+                    'tom_floor.ogg', 'hihat_open.ogg', 'ride_bell.ogg', 'crash.ogg'
+                ]
+                
+                for drum_file in drum_files:
+                    drum_path = os.path.join(drum_sounds_dir, drum_file)
+                    if os.path.exists(drum_path):
+                        dest_path = os.path.join(song_dir, drum_file)
+                        shutil.copy2(drum_path, dest_path)
+                    else:
+                        logger.warning(f"Drum sound file not found: {drum_path}")
             
-            logger.info(f"Created DTX package: {zip_path}")
-            return zip_path
+            # Extract template files directly to directory
+            self._extract_template_files(song_dir)
+            
+            logger.info(f"Created DTX package directory: {song_dir}")
+            return song_dir
             
         except Exception as e:
             raise DTXGenerationError(f"Failed to create DTX package: {e}")
     
-    def _add_template_files(self, zipf: zipfile.ZipFile, song_name: str):
-        """Add template files to DTX package."""
+    def _extract_template_files(self, song_dir: str):
+        """Extract template files directly to song directory."""
         try:
             # Check for template file
             template_path = "SimfilesTemplate.zip"
             
             if os.path.exists(template_path):
                 with zipfile.ZipFile(template_path, 'r') as template_zip:
-                    # Copy drum sound files from template
+                    # Extract drum sound files from template
                     for file_info in template_zip.filelist:
                         if file_info.filename.endswith('.ogg'):
-                            # Extract and add to main zip
+                            # Extract file
                             data = template_zip.read(file_info.filename)
-                            zipf.writestr(file_info.filename, data)
                             
-                logger.info("Added template drum sounds")
+                            # Get just the filename without the directory structure
+                            filename = os.path.basename(file_info.filename)
+                            
+                            # Map template filenames to expected DTX filenames
+                            filename_mapping = {
+                                'low_tom.ogg': 'tom_low.ogg',
+                                'high_tom.ogg': 'tom_high.ogg',
+                                'floor_tom.ogg': 'tom_floor.ogg',
+                                # Other files keep their original names
+                            }
+                            
+                            mapped_filename = filename_mapping.get(filename, filename)
+                            dest_path = os.path.join(song_dir, mapped_filename)
+                            
+                            # Write file to destination
+                            with open(dest_path, 'wb') as f:
+                                f.write(data)
+                            
+                            logger.debug(f"Extracted template file: {filename} -> {mapped_filename}")
+                            
+                logger.info("Extracted template drum sounds")
             else:
                 logger.warning("Template file not found, using default drum sounds")
                 
         except Exception as e:
-            logger.warning(f"Failed to add template files: {e}")
+            logger.warning(f"Failed to extract template files: {e}")
+    
+    def _add_template_files(self, zipf: zipfile.ZipFile, song_name: str):
+        """Add template files to DTX package (legacy method for compatibility)."""
+        logger.warning("Legacy _add_template_files method called - this should not happen with directory output")
+        # This method is kept for backward compatibility but should not be used
     
     def validate_dtx_chart(self, chart: DTXChart) -> List[str]:
         """

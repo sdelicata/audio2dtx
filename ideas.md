@@ -1,3 +1,7 @@
+# Bugs à corriger
+
+- simplifier la génération du bgm, ffmpeg était suffisant
+
 # Idées pour de nouvelles fonctionalités
 
 - Proposer de couper l'audio (BMG) pour faire tomber la première note de batterie avec le début d'une mesure

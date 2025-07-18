@@ -70,14 +70,26 @@ class LibrosaOnsetDetector(BaseOnsetDetector):
     def detect_onsets(self, audio: np.ndarray) -> OnsetDetectionResult:
         """Detect onsets using librosa method."""
         try:
+            # Get onset envelope using the correct librosa 0.8.1 API
+            if self.method == 'energy':
+                # For energy method, use onset_strength with specific parameters
+                onset_envelope = librosa.onset.onset_strength(
+                    y=audio, sr=self.sr, hop_length=self.hop_length,
+                    aggregate=np.median, fmax=8000, n_mels=256
+                )
+            else:
+                # For other methods, use onset_strength with method parameter
+                onset_envelope = librosa.onset.onset_strength(
+                    y=audio, sr=self.sr, hop_length=self.hop_length,
+                    feature=self.method if self.method in ['spectral_centroid', 'chroma', 'mfcc', 'melspectrogram'] else None
+                )
+            
             # Detect onset frames
             onset_frames = librosa.onset.onset_detect(
                 y=audio,
                 sr=self.sr,
                 hop_length=self.hop_length,
-                onset_envelope=getattr(librosa.onset, f'onset_{self.method}')(
-                    y=audio, sr=self.sr, hop_length=self.hop_length
-                )
+                onset_envelope=onset_envelope
             )
             
             # Convert frames to time
@@ -86,9 +98,6 @@ class LibrosaOnsetDetector(BaseOnsetDetector):
             )
             
             # Get onset strengths
-            onset_envelope = getattr(librosa.onset, f'onset_{self.method}')(
-                y=audio, sr=self.sr, hop_length=self.hop_length
-            )
             onset_strengths = onset_envelope[onset_frames] if len(onset_frames) > 0 else np.array([])
             
             return OnsetDetectionResult(
@@ -202,12 +211,35 @@ class MLOnsetDetector(BaseOnsetDetector):
             mel_spec_db = librosa.power_to_db(mel_spec)
             mel_spec_norm = (mel_spec_db - np.mean(mel_spec_db)) / (np.std(mel_spec_db) + 1e-8)
             
-            # Prepare input for model (add batch dimension)
-            model_input = mel_spec_norm.T[np.newaxis, :, :, np.newaxis]
+            # Reshape to match expected input format: (None, 128, 4)
+            # Split the spectrogram into chunks of 4 frames each
+            n_frames = mel_spec_norm.shape[1]
+            n_chunks = n_frames // 4
+            
+            if n_chunks == 0:
+                # If audio is too short, pad to create at least one chunk
+                mel_spec_padded = np.pad(mel_spec_norm, ((0, 0), (0, 4)), mode='constant')
+                n_chunks = 1
+            else:
+                # Truncate to fit complete chunks
+                mel_spec_padded = mel_spec_norm[:, :n_chunks*4]
+            
+            # Reshape to (n_chunks, 128, 4) and add batch dimension
+            model_input = mel_spec_padded.T.reshape(n_chunks, 128, 4)[np.newaxis, :, :, :]
             
             # Get predictions
             predictions = self.model.predict(model_input, verbose=0)
-            onset_probs = predictions[0, :, 0]  # Assuming single output
+            
+            # Handle predictions based on output shape
+            if len(predictions.shape) == 3:
+                # Model outputs (batch, time, features)
+                onset_probs = predictions[0, :, 0]  # Take first batch and first feature
+            elif len(predictions.shape) == 2:
+                # Model outputs (batch, time)
+                onset_probs = predictions[0, :]  # Take first batch
+            else:
+                # Fallback: flatten predictions
+                onset_probs = predictions.flatten()
             
             # Find peaks in probabilities
             from scipy.signal import find_peaks
@@ -215,12 +247,16 @@ class MLOnsetDetector(BaseOnsetDetector):
             peak_indices, _ = find_peaks(
                 onset_probs,
                 height=threshold,
-                distance=int(self.sr * 0.05 / self.hop_length)  # Min 50ms between onsets
+                distance=max(1, int(self.sr * 0.05 / self.hop_length))  # Min 50ms between onsets
             )
+            
+            # Convert chunk indices back to time frames
+            # Each chunk represents 4 frames, so multiply by 4
+            frame_indices = peak_indices * 4
             
             # Convert to time
             onset_times = librosa.frames_to_time(
-                peak_indices, sr=self.sr, hop_length=self.hop_length
+                frame_indices, sr=self.sr, hop_length=self.hop_length
             )
             
             onset_strengths = onset_probs[peak_indices] if len(peak_indices) > 0 else np.array([])

@@ -271,8 +271,24 @@ class AudioProcessor:
         for i, result in enumerate(results):
             if i < len(onset_times):
                 onset_time = onset_times[i]
-                instrument_id = instrument_to_id.get(result.instrument, 2)  # Default to kick
+                # Handle different result formats
+                if hasattr(result, 'instrument'):
+                    instrument_name = result.instrument
+                elif hasattr(result, 'prediction'):
+                    instrument_name = result.prediction
+                elif isinstance(result, str):
+                    instrument_name = result
+                else:
+                    # Fallback to kick drum
+                    instrument_name = 'kick'
+                    logger.warning(f"Unknown result format: {type(result)}, using kick drum")
+                
+                instrument_id = instrument_to_id.get(instrument_name, 2)  # Default to kick
                 classified_onsets[instrument_id].append(onset_time)
+        
+        # Log statistics for debugging
+        total_onsets = sum(len(times) for times in classified_onsets.values())
+        logger.info(f"Converted {len(results)} results to {total_onsets} onsets across {len([k for k, v in classified_onsets.items() if v])} instruments")
         
         return classified_onsets
     
@@ -315,8 +331,8 @@ class AudioProcessor:
         song_name = metadata.get('title', 'song')
         safe_song_name = "".join(c for c in song_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
         
-        # Create BGM file (for now, just a placeholder)
-        bgm_path = None  # Will be implemented in Phase 2
+        # Create BGM file
+        bgm_path = self._create_bgm_file(metadata, output_dir, safe_song_name)
         
         # Create DTX package
         dtx_package_path = self.dtx_writer.create_complete_dtx_package(
@@ -328,6 +344,208 @@ class AudioProcessor:
         )
         
         return dtx_package_path
+    
+    def _create_bgm_file(self, 
+                        metadata: Dict[str, Any], 
+                        output_dir: str,
+                        safe_song_name: str) -> Optional[str]:
+        """
+        Create BGM file for DTX package.
+        
+        Args:
+            metadata: Song metadata
+            output_dir: Output directory
+            safe_song_name: Safe filename for the song
+            
+        Returns:
+            Path to created BGM file or None if creation failed
+        """
+        if self.current_audio is None:
+            logger.warning("No audio loaded, cannot create BGM file")
+            return None
+        
+        try:
+            import soundfile as sf
+            
+            # Determine BGM type based on metadata
+            use_original_bgm = metadata.get('use_original_bgm', True)
+            
+            if use_original_bgm:
+                # Use original audio as BGM
+                bgm_audio = self.current_audio
+                bgm_filename = "bgm.mp3"
+                logger.info("Creating BGM from original audio")
+            else:
+                # Create separated BGM (no drums)
+                bgm_audio = self.separator.create_backing_track(
+                    self.current_audio, 
+                    include_drums=False
+                )
+                bgm_filename = "bgm_separated.mp3"
+                logger.info("Creating separated BGM (no drums)")
+            
+            # Create temporary BGM file
+            temp_dir = os.path.join(output_dir, "temp")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Convert to MP3 format
+            bgm_path = self._convert_audio_to_mp3(
+                bgm_audio, 
+                temp_dir, 
+                bgm_filename, 
+                self.settings.audio.sample_rate
+            )
+            
+            if bgm_path:
+                logger.info(f"Created BGM file: {bgm_path}")
+            else:
+                logger.error("Failed to create BGM file")
+            
+            return bgm_path
+            
+        except Exception as e:
+            logger.error(f"Failed to create BGM file: {e}")
+            return None
+    
+    def _convert_audio_to_mp3(self, 
+                             audio: np.ndarray, 
+                             output_dir: str, 
+                             filename: str, 
+                             sample_rate: int) -> Optional[str]:
+        """
+        Convert audio to MP3 format using pydub.
+        
+        Args:
+            audio: Audio data
+            output_dir: Output directory
+            filename: Output filename
+            sample_rate: Sample rate
+            
+        Returns:
+            Path to created MP3 file or None if conversion failed
+        """
+        try:
+            # Try using pydub for MP3 conversion
+            from pydub import AudioSegment
+            import soundfile as sf
+            
+            # First save as temporary WAV file
+            temp_wav_path = os.path.join(output_dir, "temp_bgm.wav")
+            sf.write(temp_wav_path, audio, sample_rate)
+            
+            # Convert WAV to MP3 using pydub
+            wav_audio = AudioSegment.from_wav(temp_wav_path)
+            mp3_path = os.path.join(output_dir, filename)
+            
+            # Export as MP3 with good quality settings
+            wav_audio.export(
+                mp3_path, 
+                format="mp3", 
+                bitrate="192k",  # Good quality, reasonable file size
+                tags={}
+            )
+            
+            # Clean up temporary WAV file
+            if os.path.exists(temp_wav_path):
+                os.remove(temp_wav_path)
+            
+            logger.info(f"Successfully converted audio to MP3: {mp3_path}")
+            return mp3_path
+            
+        except ImportError:
+            logger.warning("pydub not available, trying alternative conversion method")
+            return self._convert_audio_to_mp3_fallback(audio, output_dir, filename, sample_rate)
+        except Exception as e:
+            logger.error(f"MP3 conversion failed: {e}")
+            return self._convert_audio_to_mp3_fallback(audio, output_dir, filename, sample_rate)
+    
+    def _convert_audio_to_mp3_fallback(self, 
+                                      audio: np.ndarray, 
+                                      output_dir: str, 
+                                      filename: str, 
+                                      sample_rate: int) -> Optional[str]:
+        """
+        Fallback method for MP3 conversion using system ffmpeg.
+        
+        Args:
+            audio: Audio data
+            output_dir: Output directory
+            filename: Output filename
+            sample_rate: Sample rate
+            
+        Returns:
+            Path to created file or None if conversion failed
+        """
+        try:
+            import soundfile as sf
+            import subprocess
+            
+            # First save as temporary WAV file
+            temp_wav_path = os.path.join(output_dir, "temp_bgm.wav")
+            sf.write(temp_wav_path, audio, sample_rate)
+            
+            # Try to convert using ffmpeg
+            mp3_path = os.path.join(output_dir, filename)
+            
+            # Use ffmpeg to convert WAV to MP3
+            cmd = [
+                'ffmpeg', '-i', temp_wav_path,
+                '-codec:a', 'mp3',
+                '-b:a', '192k',
+                '-y',  # Overwrite output file
+                mp3_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                # Clean up temporary WAV file
+                if os.path.exists(temp_wav_path):
+                    os.remove(temp_wav_path)
+                logger.info(f"Successfully converted audio to MP3 using ffmpeg: {mp3_path}")
+                return mp3_path
+            else:
+                logger.warning(f"ffmpeg conversion failed: {result.stderr}")
+                # Fall back to WAV format
+                return self._convert_audio_to_wav_fallback(audio, output_dir, filename, sample_rate)
+                
+        except Exception as e:
+            logger.warning(f"ffmpeg conversion failed: {e}")
+            # Fall back to WAV format
+            return self._convert_audio_to_wav_fallback(audio, output_dir, filename, sample_rate)
+    
+    def _convert_audio_to_wav_fallback(self, 
+                                      audio: np.ndarray, 
+                                      output_dir: str, 
+                                      filename: str, 
+                                      sample_rate: int) -> Optional[str]:
+        """
+        Final fallback: save as WAV file.
+        
+        Args:
+            audio: Audio data
+            output_dir: Output directory
+            filename: Output filename
+            sample_rate: Sample rate
+            
+        Returns:
+            Path to created WAV file
+        """
+        try:
+            import soundfile as sf
+            
+            # Change extension to WAV
+            wav_filename = filename.replace('.mp3', '.wav')
+            wav_path = os.path.join(output_dir, wav_filename)
+            
+            sf.write(wav_path, audio, sample_rate)
+            logger.warning(f"MP3 conversion not available, saved as WAV: {wav_path}")
+            
+            return wav_path
+            
+        except Exception as e:
+            logger.error(f"Failed to save audio file: {e}")
+            return None
     
     def get_processing_results(self) -> Dict[str, Any]:
         """
